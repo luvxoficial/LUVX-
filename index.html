@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f5f5a">
+<title>LUVX · Negocio y Taller</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icono-192.png">
+<link rel="apple-touch-icon" href="icono-192.png">
+<link rel="stylesheet" href="estilos.css">
+</head>
+<body>
+<div id="app"><div class="pantalla-centro"><div class="logo">LUVX</div><p>Cargando…</p></div></div>
+<div id="modal-fondo" class="oculto" onclick="if(event.target===this)cerrarModal()"><div id="modal"></div></div>
+<div id="aviso" class="oculto"></div>
+<datalist id="dl-prod"></datalist>
+<datalist id="dl-cat"></datalist>
+<script src="firebase-config.js"></script>
+<script src="datos_iniciales.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
