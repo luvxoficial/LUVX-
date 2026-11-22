@@ -243,9 +243,44 @@ function textoOps(r) {
   if (r.tipo === 'menos') return 'Todo menos: ' + (nombres.join(', ') || '—');
   return 'Solo: ' + (nombres.join(', ') || '—');
 }
+// Persona que completa lo que falta en los trabajos de los demás (por defecto "YO")
+function idCompleta() {
+  const c = CFG();
+  if (c.completaId !== undefined) { const p = porId('personas', c.completaId); return p && p.activo !== false ? p.id : ''; }
+  const yo = S.personas.find(p => p.activo !== false && p.nombre.trim().toLowerCase() === 'yo');
+  return yo ? yo.id : '';
+}
+// Lo que falta de la prenda en un registro, separado en recta y remalle, para anotarlo a quien completa
+function partesFaltantes(r) {
+  const p = porId('prendas', r.prendaId), quien = idCompleta();
+  if (!p || !quien) return [];
+  const hechas = new Set(opsHechas(r, p).map(o => o.id)), out = [];
+  for (const [m, suf] of [['recta', 'a'], ['remalle', 'b']]) {
+    const u = universo(p, m, r.fecha), falt = u.filter(o => !hechas.has(o.id));
+    if (!falt.length) continue;
+    const todo = falt.length === u.length;
+    out.push({ id: r.id + '_' + suf, personaId: quien, fecha: r.fecha, prendaId: r.prendaId, cantidad: +r.cantidad, maquina: m, tipo: todo ? 'todo' : 'solo', ops: todo ? [] : falt.map(o => o.id), origenId: r.id, creado: (r.creado || 0) + 1 });
+  }
+  return out;
+}
+// Trabajos que entre la persona y YO cubren toda la prenda: no dejan remalle pendiente
+function gruposCompletos() {
+  if (cache.grupos) return cache.grupos;
+  const excl = new Set();
+  S.registros.filter(r => r.completar).forEach(r => {
+    const hijos = S.registros.filter(x => x.origenId === r.id), p = porId('prendas', r.prendaId);
+    if (!hijos.length || !p) return;
+    const todos = [r, ...hijos];
+    if (todos.some(x => +x.cantidad !== +r.cantidad || x.prendaId !== r.prendaId)) return;
+    const hechas = new Set(todos.flatMap(x => opsHechas(x, p).map(o => o.id)));
+    if (universo(p, 'completa', r.fecha).every(o => hechas.has(o.id))) todos.forEach(x => excl.add(x.id));
+  });
+  return cache.grupos = excl;
+}
 function remallePendiente(hasta) {
+  const excl = gruposCompletos();
   return S.prendas.map(p => {
-    const regs = S.registros.filter(r => r.prendaId === p.id && r.fecha <= hasta);
+    const regs = S.registros.filter(r => r.prendaId === p.id && r.fecha <= hasta && !excl.has(r.id));
     const listas = regs.filter(r => r.maquina === 'recta' && (r.tipo === 'todo' || r.tipo === 'menos')).reduce((s, r) => s + +r.cantidad, 0);
     const rem = regs.filter(r => r.maquina === 'remalle');
     const det = universo(p, 'remalle', hasta).map(o => {
@@ -673,12 +708,17 @@ function vPersona(pid) {
 function lineaRegistro(r) {
   const p = porId('prendas', r.prendaId);
   const chip = r.maquina === 'recta' ? 'chip' : r.maquina === 'remalle' ? 'chip rem' : 'chip comp';
-  return `<div class="fila" onclick="formRegistro('${r.id}')"><div class="cuerpo reg-linea"><b>${fCorta(r.fecha)}</b> · ${esc(p?.nombre || '?')} ×${num(r.cantidad)} <span class="${chip}">${MAQ[r.maquina]}</span> · <span style="color:var(--suave)">${esc(textoOps(r))}</span></div>
+  let marca = '';
+  if (r.origenId) { const o = porId('registros', r.origenId); marca = ` <span class="chip gris">falta de ${esc(porId('personas', o?.personaId)?.nombre || '…')}</span>`; }
+  else if (r.completar && S.registros.some(x => x.origenId === r.id)) marca = ` <span class="chip gris">resto a ${esc(porId('personas', idCompleta())?.nombre || 'YO')}</span>`;
+  return `<div class="fila" onclick="formRegistro('${r.id}')"><div class="cuerpo reg-linea"><b>${fCorta(r.fecha)}</b> · ${esc(p?.nombre || '?')} ×${num(r.cantidad)} <span class="${chip}">${MAQ[r.maquina]}</span> · <span style="color:var(--suave)">${esc(textoOps(r))}</span>${marca}</div>
     <div class="der"><span class="monto">${sol(pagoReg(r))}</span><small>${sol(pagoUnit(r))} c/u</small></div></div>`;
 }
 function formRegistro(id, pid) {
   const r = id ? copia(porId('registros', id)) : { id: nid(), personaId: pid, fecha: fechaPorDefecto(), prendaId: (UI.ultPrenda && porId('prendas', UI.ultPrenda)) ? UI.ultPrenda : (S.prendas[0]?.id || ''), cantidad: '', maquina: 'recta', tipo: 'todo', ops: [], creado: Date.now() };
-  F = { col: 'registros', d: r, nuevo: !id, abierto: false };
+  const quien = idCompleta();
+  F = { col: 'registros', d: r, nuevo: !id, abierto: false, puede: !!quien && r.personaId !== quien && !r.origenId };
+  F.completar = F.puede && (id ? !!r.completar : true);
   const per = porId('personas', r.personaId);
   abrirModal((id ? 'Editar registro · ' : 'Nuevo registro · ') + esc(per?.nombre || ''), '<div id="reg-form"></div>',
     `${id ? '<button class="btn peligro" onclick="borrarRegistro()">Borrar</button>' : ''}<button class="btn" onclick="cerrarModal()">Cancelar</button><button class="btn pri" onclick="guardarRegistro()">Guardar</button>`);
@@ -708,7 +748,9 @@ function pintarRegistro() {
         : (nombres.length ? `<div class="resumen-ops">${r.tipo === 'menos' ? 'No hizo: ' : 'Hizo: '}${esc(nombres.join(', '))}</div>` : '')}
     </div>`}
     ${otrasPersonas.length > 1 && !F.nuevo ? `<div class="campo"><label>Persona</label><select onchange="F.d.personaId=this.value">${otrasPersonas.map(p => `<option value="${p.id}" ${p.id === r.personaId ? 'selected' : ''}>${esc(p.nombre)}</option>`).join('')}</select></div>` : ''}
-    <div class="calc"><span>Pago por unidad: <b id="reg-pu"></b></span><span>Total: <b id="reg-tot"></b></span></div>`;
+    <div class="calc"><span>Pago por unidad: <b id="reg-pu"></b></span><span>Total: <b id="reg-tot"></b></span></div>
+    ${F.puede ? `<label class="check" style="background:var(--pri2);border-radius:10px"><input type="checkbox" ${F.completar ? 'checked' : ''} onchange="F.completar=this.checked;regCalc()"><span>Lo que falta lo hizo <b>${esc(porId('personas', idCompleta())?.nombre || '')}</b></span></label><div class="ayuda" id="reg-resto" style="margin:6px 4px 4px"></div>` : ''}
+    ${r.origenId ? `<div class="nota" style="margin-top:6px">Se anotó solo, con lo que faltó en el trabajo de <b>${esc(porId('personas', porId('registros', r.origenId)?.personaId)?.nombre || 'otra persona')}</b>. Puedes cambiarlo; desde ese momento ya no se actualizará solo.</div>` : ''}`;
   regCalc();
 }
 function regLimpiar() { const u = new Set(universo(porId('prendas', F.d.prendaId), F.d.maquina, F.d.fecha).map(o => o.id)); F.d.ops = F.d.ops.filter(id => u.has(id)); }
@@ -719,6 +761,12 @@ function regMarcar(id, on) {
 function regCalc() {
   const pu = F.d.prendaId ? pagoUnit(F.d) : 0;
   $('reg-pu').textContent = sol(pu); $('reg-tot').textContent = sol(pu * (+F.d.cantidad || 0));
+  const el = $('reg-resto'); if (!el) return;
+  if (!F.completar) { el.textContent = 'No se anotará nada más.'; return; }
+  const partes = F.d.prendaId ? partesFaltantes(F.d) : [], nom = porId('personas', idCompleta())?.nombre || '';
+  if (!partes.length) { el.textContent = 'Hizo toda la prenda: no falta nada para ' + nom + '.'; return; }
+  const tot = partes.reduce((s, x) => s + pagoUnit(x) * (+F.d.cantidad || 0), 0);
+  el.innerHTML = 'A ' + esc(nom) + ' se le anotará: ' + partes.map(x => '<b>' + MAQ[x.maquina] + '</b> ' + esc(x.tipo === 'todo' ? 'todo completo' : textoOps(x).replace('Solo: ', ''))).join(' + ') + ' · <b>' + sol(tot) + '</b>';
 }
 function guardarRegistro() {
   const r = F.d;
@@ -726,9 +774,28 @@ function guardarRegistro() {
   if (!(+r.cantidad > 0)) return aviso('Escribe la cantidad');
   if (r.tipo !== 'todo' && !r.ops.length) return aviso(r.tipo === 'solo' ? 'Marca las operaciones que hizo' : 'Marca las operaciones que NO hizo (o elige “Todo completo”)');
   r.cantidad = +r.cantidad; UI.ultPrenda = r.prendaId;
-  guardar('registros', r); cerrarModal(); aviso('Registro guardado ✓');
+  if (r.origenId && !F.nuevo) r.manual = true;
+  if (F.puede) r.completar = F.completar;
+  guardar('registros', r);
+  let msg = 'Registro guardado ✓';
+  if (F.puede) {
+    const hijos = S.registros.filter(x => x.origenId === r.id), nom = porId('personas', idCompleta())?.nombre || '';
+    if (r.completar) {
+      if (!hijos.some(h => h.manual) || confirm('Lo anotado a ' + nom + ' de este trabajo fue cambiado a mano. ¿Reemplazarlo con lo que falta ahora?')) {
+        const nuevos = partesFaltantes(r), ids = new Set(nuevos.map(x => x.id));
+        hijos.filter(h => !ids.has(h.id)).forEach(h => borrar('registros', h.id));
+        nuevos.forEach(x => guardar('registros', x));
+        if (nuevos.length) msg = 'Guardado ✓ y anotado lo que falta a ' + nom;
+      }
+    } else hijos.filter(h => !h.manual).forEach(h => borrar('registros', h.id));
+  }
+  cerrarModal(); aviso(msg);
 }
-function borrarRegistro() { if (!confirm('¿Borrar este registro?')) return; borrar('registros', F.d.id); cerrarModal(); }
+function borrarRegistro() {
+  const hijos = S.registros.filter(x => x.origenId === F.d.id), nom = porId('personas', idCompleta())?.nombre || 'YO';
+  if (!confirm(hijos.length ? '¿Borrar este registro y también lo que se anotó a ' + nom + ' por este trabajo?' : '¿Borrar este registro?')) return;
+  hijos.forEach(h => borrar('registros', h.id)); borrar('registros', F.d.id); cerrarModal();
+}
 
 function vTallerResumen() {
   const s = SEM();
@@ -848,8 +915,14 @@ function verHistorial(pid) {
 }
 
 // ---------- Personas ----------
+function cambiarCompleta(v) { const c = copia(CFG()); c.completaId = v; guardar('config', c); aviso(v ? 'Listo ✓' : 'Ya no se llenará solo'); }
 function vPersonas() {
-  return `<h2>Personas del taller</h2><div class="lista">${S.personas.slice().sort((a, b) => a.nombre.localeCompare(b.nombre)).map(p => `<div class="fila" onclick="formPersona('${p.id}')"><div class="cuerpo"><div class="tit">${esc(p.nombre)}</div><div class="sub">${p.activo === false ? 'Quitada (no aparece en las pestañas)' : 'Activa'}</div></div></div>`).join('') || '<div class="vacio">No hay personas.</div>'}</div>`;
+  const ic = idCompleta();
+  return `<h2>Personas del taller</h2>
+    <div class="tarjeta"><div class="campo" style="margin:0"><label>Lo que falta en los trabajos de los demás lo hace</label>
+      <select onchange="cambiarCompleta(this.value)"><option value="">Nadie (no llenar solo)</option>${personasActivas().map(p => `<option value="${p.id}" ${p.id === ic ? 'selected' : ''}>${esc(p.nombre)}</option>`).join('')}</select>
+      <div class="ayuda">Al anotar un trabajo de otra persona aparece la casilla “Lo que falta lo hizo…”.</div></div></div>
+    <div class="lista">${S.personas.slice().sort((a, b) => a.nombre.localeCompare(b.nombre)).map(p => `<div class="fila" onclick="formPersona('${p.id}')"><div class="cuerpo"><div class="tit">${esc(p.nombre)}</div><div class="sub">${p.activo === false ? 'Quitada (no aparece en las pestañas)' : 'Activa'}</div></div></div>`).join('') || '<div class="vacio">No hay personas.</div>'}</div>`;
 }
 function formPersona(id) {
   const p = id ? copia(porId('personas', id)) : { id: nid(), nombre: '', activo: true }; F = { col: 'personas', d: p };
