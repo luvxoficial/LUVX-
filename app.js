@@ -259,7 +259,7 @@ function partesFaltantes(r) {
     const u = universo(p, m, r.fecha), falt = u.filter(o => !hechas.has(o.id));
     if (!falt.length) continue;
     const todo = falt.length === u.length;
-    out.push({ id: r.id + '_' + suf, personaId: quien, fecha: r.fecha, prendaId: r.prendaId, cantidad: +r.cantidad, maquina: m, tipo: todo ? 'todo' : 'solo', ops: todo ? [] : falt.map(o => o.id), origenId: r.id, creado: (r.creado || 0) + 1 });
+    out.push({ id: r.id + '_' + suf, personaId: quien, fecha: r.fecha, prendaId: r.prendaId, productoId: r.productoId || '', cantidad: +r.cantidad, maquina: m, tipo: todo ? 'todo' : 'solo', ops: todo ? [] : falt.map(o => o.id), origenId: r.id, creado: (r.creado || 0) + 1 });
   }
   return out;
 }
@@ -497,12 +497,17 @@ function pintarLineas() {
   }).join('');
   $('doc-total').textContent = sol(totalDoc(F.d));
 }
+function ultimoCosto(pid) { // último costo que escribiste en una compra de este producto
+  let best = null;
+  S.compras.forEach(c => (c.lineas || []).forEach(l => { if (l.productoId === pid && +l.precio > 0 && (!best || c.fecha >= best.f)) best = { f: c.fecha, p: +l.precio }; }));
+  return best ? best.p : 0;
+}
 function elegirProd(i, val) {
   const cod = val.split(' · ')[0].trim();
   const p = S.productos.find(x => x.codigo === cod) || S.productos.find(x => x.nombre.toLowerCase() === val.trim().toLowerCase());
   if (!p) { aviso('Elige un producto de la lista'); return; }
   const l = F.d.lineas[i]; l.productoId = p.id;
-  l.precio = F.col === 'ventas' ? +p.precio || 0 : r2(stockHoy(p.id).prom || l.precio || 0);
+  l.precio = F.col === 'ventas' ? +p.precio || 0 : r2(ultimoCosto(p.id) || stockHoy(p.id).prom || l.precio || 0);
   setTimeout(pintarLineas, 0);
 }
 function ponLinea(i, k, v) { F.d.lineas[i][k] = +v || 0; $('st-' + i).textContent = sol(totalLinea(F.d.lineas[i])); $('doc-total').textContent = sol(totalDoc(F.d)); }
@@ -706,18 +711,18 @@ function vPersona(pid) {
     <div class="lista">${regs.map(lineaRegistro).join('') || '<div class="vacio">Sin registros en esta semana.<br>Toca “+ Registro” para anotar.</div>'}</div>`;
 }
 function lineaRegistro(r) {
-  const p = porId('prendas', r.prendaId);
+  const p = porId('prendas', r.prendaId), prod = porId('productos', r.productoId);
   const chip = r.maquina === 'recta' ? 'chip' : r.maquina === 'remalle' ? 'chip rem' : 'chip comp';
   let marca = '';
   if (r.origenId) { const o = porId('registros', r.origenId); marca = ` <span class="chip gris">falta de ${esc(porId('personas', o?.personaId)?.nombre || '…')}</span>`; }
   else if (r.completar && S.registros.some(x => x.origenId === r.id)) marca = ` <span class="chip gris">resto a ${esc(porId('personas', idCompleta())?.nombre || 'YO')}</span>`;
-  return `<div class="fila" onclick="formRegistro('${r.id}')"><div class="cuerpo reg-linea"><b>${fCorta(r.fecha)}</b> · ${esc(p?.nombre || '?')} ×${num(r.cantidad)} <span class="${chip}">${MAQ[r.maquina]}</span> · <span style="color:var(--suave)">${esc(textoOps(r))}</span>${marca}</div>
+  return `<div class="fila" onclick="formRegistro('${r.id}')"><div class="cuerpo reg-linea"><b>${fCorta(r.fecha)}</b> · ${esc(prod?.nombre || p?.nombre || '?')} ×${num(r.cantidad)} <span class="${chip}">${MAQ[r.maquina]}</span> · <span style="color:var(--suave)">${esc(textoOps(r))}</span>${marca}</div>
     <div class="der"><span class="monto">${sol(pagoReg(r))}</span><small>${sol(pagoUnit(r))} c/u</small></div></div>`;
 }
 function formRegistro(id, pid) {
-  const r = id ? copia(porId('registros', id)) : { id: nid(), personaId: pid, fecha: fechaPorDefecto(), prendaId: (UI.ultPrenda && porId('prendas', UI.ultPrenda)) ? UI.ultPrenda : (S.prendas[0]?.id || ''), cantidad: '', maquina: 'recta', tipo: 'todo', ops: [], creado: Date.now() };
+  const r = id ? copia(porId('registros', id)) : { id: nid(), personaId: pid, fecha: fechaPorDefecto(), prendaId: (UI.ultPrenda && porId('prendas', UI.ultPrenda)) ? UI.ultPrenda : (S.prendas[0]?.id || ''), productoId: '', sinEtiqueta: false, cantidad: '', maquina: 'recta', tipo: 'todo', ops: [], creado: Date.now() };
   const quien = idCompleta();
-  F = { col: 'registros', d: r, nuevo: !id, abierto: false, puede: !!quien && r.personaId !== quien && !r.origenId };
+  F = { col: 'registros', d: r, nuevo: !id, abierto: false, verTodos: false, puede: !!quien && r.personaId !== quien && !r.origenId };
   F.completar = F.puede && (id ? !!r.completar : true);
   const per = porId('personas', r.personaId);
   abrirModal((id ? 'Editar registro · ' : 'Nuevo registro · ') + esc(per?.nombre || ''), '<div id="reg-form"></div>',
@@ -732,12 +737,22 @@ function pintarRegistro() {
   const nombres = (r.ops || []).map(id => prenda?.ops.find(o => o.id === id)?.nombre).filter(Boolean);
   const grupos = r.maquina === 'completa' ? [['recta', 'Recta'], ['remalle', 'Remalle']] : [[r.maquina, '']];
   const otrasPersonas = S.personas.filter(p => p.activo !== false || p.id === r.personaId);
+  const prods = productosDePrenda(prenda, F.verTodos, r.productoId), porCat = {};
+  prods.forEach(p => (porCat[p.categoria] = porCat[p.categoria] || []).push(p));
+  const opcionesProd = Object.entries(porCat).map(([c, ps]) => `<optgroup label="${esc(c)}">${ps.map(p => `<option value="${p.id}" ${p.id === r.productoId ? 'selected' : ''}>${esc(p.nombre)} · stock ${num(stockHoy(p.id).q)}</option>`).join('')}</optgroup>`).join('');
+  const bloqueProd = `<div class="campo"><label>Prenda exacta (talla y color)</label>
+      <select onchange="F.d.productoId=this.value"><option value="">— Elegir —</option>${opcionesProd}</select>
+      <button class="btn chico" style="margin-top:6px" onclick="F.verTodos=!F.verTodos;pintarRegistro()">${F.verTodos ? 'Mostrar solo los comprados' : 'Mostrar todos'}</button></div>`;
+  const etq = etqOp();
+  const bloqueEtq = etq && r.maquina === 'recta' ? `<label class="check" style="background:var(--aviso2);border-radius:10px;margin-bottom:12px"><input type="checkbox" ${r.sinEtiqueta ? 'checked' : ''} onchange="regSinEtq(this.checked)"><span>Sin etiqueta (no se pegó etiqueta)</span></label>` : '';
   $('reg-form').innerHTML = `
     <div class="campo"><label>Fecha</label><input type="date" value="${r.fecha}" onchange="F.d.fecha=this.value;regLimpiar();pintarRegistro()"></div>
-    <div class="campo"><label>Prenda</label><div class="seg">${S.prendas.map(p => `<button class="${p.id === r.prendaId ? 'act' : ''}" onclick="F.d.prendaId='${p.id}';F.d.ops=[];pintarRegistro()">${esc(p.nombre)}</button>`).join('')}</div></div>
+    <div class="campo"><label>Prenda</label><div class="seg">${S.prendas.map(p => `<button class="${p.id === r.prendaId ? 'act' : ''}" onclick="regPrenda('${p.id}')">${esc(p.nombre)}</button>`).join('')}</div></div>
+    ${bloqueProd}
     <div class="campo"><label>Cantidad</label><input type="number" inputmode="numeric" min="0" value="${r.cantidad}" placeholder="0" oninput="F.d.cantidad=+this.value||0;regCalc()" id="reg-cant"></div>
     <div class="campo"><label>Máquina</label><div class="seg">${Object.entries(MAQ).map(([k, t]) => `<button class="${k === r.maquina ? 'act' : ''}" onclick="regMaquina('${k}')">${t}</button>`).join('')}</div></div>
-    <div class="campo"><label>Tipo</label><div class="seg">${tiposPermitidos(r.maquina).map(k => `<button class="${k === r.tipo ? 'act' : ''}" onclick="F.d.tipo='${k}';F.d.ops=[];F.abierto=${k !== 'todo'};pintarRegistro()">${TIPO[k]}</button>`).join('')}</div></div>
+    <div class="campo"><label>Tipo</label><div class="seg">${tiposPermitidos(r.maquina).map(k => `<button class="${k === r.tipo ? 'act' : ''}" onclick="regTipo('${k}')">${TIPO[k]}</button>`).join('')}</div></div>
+    ${bloqueEtq}
     ${r.tipo === 'todo' ? '' : `
     <div class="campo"><label>Operaciones</label>
       <button class="desp-btn" onclick="F.abierto=!F.abierto;pintarRegistro()"><span>${F.abierto ? (r.tipo === 'menos' ? 'Marca las que NO hizo' : 'Marca las que SÍ hizo') : (nombres.length ? nombres.length + ' marcada' + (nombres.length > 1 ? 's' : '') : 'Elegir operaciones')}</span><span class="flecha">${F.abierto ? '▲' : '▼'}</span></button>
@@ -754,9 +769,36 @@ function pintarRegistro() {
   regCalc();
 }
 function regLimpiar() { const u = new Set(universo(porId('prendas', F.d.prendaId), F.d.maquina, F.d.fecha).map(o => o.id)); F.d.ops = F.d.ops.filter(id => u.has(id)); }
-function regMaquina(m) { F.d.maquina = m; if (!tiposPermitidos(m).includes(F.d.tipo)) F.d.tipo = 'todo'; regLimpiar(); pintarRegistro(); }
+function productosDePrenda(prenda, todos, actualId) { // productos de ese tipo (polera, casaca, baggy…) que ya compraste
+  if (!prenda) return [];
+  const n = prenda.nombre.trim().toLowerCase(), comp = new Set();
+  S.compras.forEach(c => (c.lineas || []).forEach(l => comp.add(l.productoId)));
+  const todosLos = S.productos.filter(p => (p.categoria || '').toLowerCase().startsWith(n));
+  const comprados = todosLos.filter(p => comp.has(p.id) || p.id === actualId);
+  return (todos || !comprados.length ? todosLos : comprados).slice().sort(ordenProd);
+}
+function etqOp() { const p = porId('prendas', F.d.prendaId); return p && /baggy/i.test(p.nombre) ? p.ops.find(o => /etiqueta/i.test(o.nombre)) : null; }
+function regResetEtq() { if (F.d.sinEtiqueta) { F.d.sinEtiqueta = false; F.d.tipo = 'todo'; F.d.ops = []; } }
+function aplicarEtq(on) {
+  const e = etqOp(); if (!e) return;
+  const s = new Set(F.d.ops), t = F.d.tipo;
+  if (t === 'menos') { on ? s.add(e.id) : s.delete(e.id); if (!on && !s.size) F.d.tipo = 'todo'; }
+  else if (t === 'solo') { on ? s.delete(e.id) : s.add(e.id); }
+  else if (on) { F.d.tipo = 'menos'; s.add(e.id); }
+  F.d.ops = [...s];
+}
+function regPrenda(id) { regResetEtq(); F.d.prendaId = id; F.d.productoId = ''; F.d.ops = []; F.verTodos = false; pintarRegistro(); }
+function regTipo(k) { F.d.tipo = k; F.d.ops = []; F.abierto = k !== 'todo'; if (F.d.sinEtiqueta) aplicarEtq(true); pintarRegistro(); }
+function regSinEtq(on) { F.d.sinEtiqueta = on; aplicarEtq(on); pintarRegistro(); }
+function regMaquina(m) { if (m !== F.d.maquina) regResetEtq(); F.d.maquina = m; if (!tiposPermitidos(m).includes(F.d.tipo)) F.d.tipo = 'todo'; regLimpiar(); pintarRegistro(); }
 function regMarcar(id, on) {
-  const s = new Set(F.d.ops); on ? s.add(id) : s.delete(id); F.d.ops = [...s]; regCalc();
+  const s = new Set(F.d.ops); on ? s.add(id) : s.delete(id); F.d.ops = [...s];
+  const e = etqOp();
+  if (e && e.id === id && F.d.maquina === 'recta') {
+    const nuevo = F.d.tipo === 'solo' ? !on : F.d.tipo === 'menos' ? on : false;
+    if (nuevo !== !!F.d.sinEtiqueta) { F.d.sinEtiqueta = nuevo; pintarRegistro(); return; }
+  }
+  regCalc();
 }
 function regCalc() {
   const pu = F.d.prendaId ? pagoUnit(F.d) : 0;
@@ -771,6 +813,7 @@ function regCalc() {
 function guardarRegistro() {
   const r = F.d;
   if (!r.prendaId) return aviso('Elige la prenda');
+  if (F.nuevo && !r.productoId) return aviso('Elige la prenda exacta (talla y color)');
   if (!(+r.cantidad > 0)) return aviso('Escribe la cantidad');
   if (r.tipo !== 'todo' && !r.ops.length) return aviso(r.tipo === 'solo' ? 'Marca las operaciones que hizo' : 'Marca las operaciones que NO hizo (o elige “Todo completo”)');
   r.cantidad = +r.cantidad; UI.ultPrenda = r.prendaId;
@@ -1003,7 +1046,7 @@ async function exportarExcel() {
     Kardex: inv.movs.map(m => ({ 'Fecha': m.f, 'Código': P(m.pid).codigo, 'Producto': P(m.pid).nombre, 'Movimiento': m.tipo, 'Cantidad': r2(m.q), 'Valor': r2(m.v), 'Saldo unid.': r2(m.sq), 'Saldo S/': r2(m.sv) })),
     Clientes: S.clientes.map(c => ({ 'Nombre': c.nombre, 'Compañía': c.empresa || '', 'RUC/DNI': c.ruc || '', 'Teléfono': c.telefono || '', 'Correo': c.email || '', 'Dirección': c.direccion || '' })),
     Proveedores: S.proveedores.map(c => ({ 'Nombre': c.nombre, 'RUC/DNI': c.documento || '', 'Teléfono': c.telefono || '', 'Dirección': c.direccion || '' })),
-    Taller: S.registros.slice().sort((a, b) => a.fecha < b.fecha ? -1 : 1).map(r => ({ 'Fecha': r.fecha, 'Semana': textoSemana(semanaDe(r.fecha)), 'Persona': nom('personas', r.personaId), 'Prenda': nom('prendas', r.prendaId), 'Cantidad': r.cantidad, 'Máquina': MAQ[r.maquina], 'Operaciones': textoOps(r), 'Pago unidad': r2(pagoUnit(r)), 'Total': pagoReg(r) })),
+    Taller: S.registros.slice().sort((a, b) => a.fecha < b.fecha ? -1 : 1).map(r => ({ 'Fecha': r.fecha, 'Semana': textoSemana(semanaDe(r.fecha)), 'Persona': nom('personas', r.personaId), 'Prenda': nom('prendas', r.prendaId), 'Producto (talla y color)': nom('productos', r.productoId), 'Cantidad': r.cantidad, 'Máquina': MAQ[r.maquina], 'Operaciones': textoOps(r), 'Pago unidad': r2(pagoUnit(r)), 'Total': pagoReg(r) })),
     Tarifas: S.prendas.flatMap(p => p.ops.flatMap(o => (o.precios || []).map(x => ({ 'Prenda': p.nombre, 'Operación': o.nombre, 'Máquina': MAQ[o.maquina], 'Desde': x.desde, 'Precio': x.valor, 'Quitada desde': o.quitadaDesde || '' }))))
   };
   const wb = XLSX.utils.book_new();
@@ -1018,5 +1061,8 @@ function abrirModal(titulo, cuerpo, pie) {
 }
 function cerrarModal() { $('modal-fondo').classList.add('oculto'); document.body.style.overflow = ''; F = null; }
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('modal-fondo').classList.contains('oculto')) cerrarModal(); });
+
+// La rueda del mouse no cambia los números: solo desplaza la pantalla
+document.addEventListener('wheel', () => { const a = document.activeElement; if (a && a.type === 'number') a.blur(); }, { passive: true });
 
 arrancar();
