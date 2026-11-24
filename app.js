@@ -445,7 +445,7 @@ function formDoc(col, id) {
   const esV = col === 'ventas';
   const d = id ? copia(porId(col, id)) : { id: nid(), fecha: fechaPorDefecto(), factura: '', comentario: '', lineas: [], ...(esV ? { clienteId: '' } : { proveedorId: '' }) };
   if (!d.lineas.length) d.lineas.push({ productoId: '', cantidad: 1, precio: 0, descuento: 0 });
-  F = { col, d, nuevo: !id };
+  F = { col, d, nuevo: !id, modoDoc: 'prenda', dr: { color: '', precio: '', q: {} } };
   const contactos = esV ? S.clientes : S.proveedores, campo = esV ? 'clienteId' : 'proveedorId';
   const cuerpo = `
     <div class="dos">
@@ -461,12 +461,48 @@ function formDoc(col, id) {
       </select></div>`}
     <h3>Productos</h3>
     <div id="lineas"></div>
-    <button class="btn ancho" onclick="agregarLinea()">+ Agregar producto</button>
+    <div class="campo"><label>Cómo agregar</label><div class="seg" id="doc-modo"></div></div>
+    <div id="rollo-doc"></div>
+    <button class="btn ancho" id="btn-add-linea" onclick="agregarLinea()">+ Agregar producto</button>
     <div class="calc" style="margin-top:12px"><span>Total</span><b id="doc-total"></b></div>
     <div class="campo"><label>Comentario (opcional)</label><input value="${esc(d.comentario || '')}" oninput="F.d.comentario=this.value"></div>`;
   abrirModal((id ? 'Editar ' : 'Nueva ') + (esV ? 'venta' : 'compra'), cuerpo,
     `${id ? `<button class="btn peligro" onclick="borrarDoc()">Borrar</button>` : ''}<button class="btn" onclick="cerrarModal()">Cancelar</button><button class="btn pri" onclick="guardarDoc()">Guardar</button>`);
-  pintarLineas();
+  pintarLineas(); pintarRolloDoc();
+}
+// ----- Agregar por rollo (color + cantidad por talla) en ventas y compras -----
+function colorGrupos() { const g = {}; S.productos.filter(p => F.col !== 'ventas' || stockDisponible(p.id) > 0).forEach(p => { const k = claveColor(p); (g[k] = g[k] || []).push(p); }); return g; }
+function precioDefecto(p) { return F.col === 'ventas' ? (+p.precio || 0) : r2(+p.costo || ultimoCosto(p.id) || stockHoy(p.id).prom || 0); }
+function docModo(m) { F.modoDoc = m; pintarRolloDoc(); }
+function docColor(k) { F.dr.color = k; F.dr.q = {}; pintarRolloDoc(); }
+function docQ(id, v) { F.dr.q[id] = +v || 0; docCalc(); }
+function docCalc() { const t = $('rd-total'); if (t) t.textContent = num(Object.values(F.dr.q).reduce((a, q) => a + (+q || 0), 0)) + ' prendas'; }
+function pintarRolloDoc() {
+  const esV = F.col === 'ventas', box = $('rollo-doc'); if (!box) return;
+  $('doc-modo').innerHTML = [['prenda', 'Una prenda'], ['rollo', 'Por rollo (varias tallas)']].map(([k, t]) => `<button class="${F.modoDoc === k ? 'act' : ''}" onclick="docModo('${k}')">${t}</button>`).join('');
+  $('btn-add-linea').classList.toggle('oculto', F.modoDoc === 'rollo');
+  if (F.modoDoc !== 'rollo') { box.innerHTML = ''; return; }
+  const g = colorGrupos(), tallas = (g[F.dr.color] || []).slice().sort(ordenTalla);
+  const sinStock = esV && !Object.keys(g).length;
+  box.innerHTML = sinStock ? '<div class="nota">No hay productos con stock para vender.</div>' : `<div class="campo"><label>Color del rollo</label>
+    <select onchange="docColor(this.value)"><option value="">— Elegir color —</option>${Object.keys(g).sort().map(k => `<option value="${esc(k)}" ${k === F.dr.color ? 'selected' : ''}>${esc(k)}</option>`).join('')}</select></div>
+    ${tallas.length ? `<div class="campo"><label>Cantidad por talla</label><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(78px,1fr));gap:8px">${tallas.map(p => `<div><label style="margin-bottom:2px">${esc(partesProd(p).talla)}</label><input class="inp" type="number" inputmode="numeric" min="0" value="${F.dr.q[p.id] || ''}" placeholder="0" oninput="docQ('${p.id}',this.value)">${esV ? `<div class="ayuda">stock ${num(stockDisponible(p.id))}</div>` : ''}</div>`).join('')}</div></div>
+    <div class="calc"><span>Total del rollo</span><b id="rd-total">0 prendas</b></div>
+    <button class="btn pri ancho" style="margin-bottom:10px" onclick="agregarRolloDoc()">+ Agregar rollo al documento</button>` : ''}`;
+  docCalc();
+}
+function agregarRolloDoc() {
+  if (!F.dr.color) return aviso('Elige el color del rollo');
+  const ids = new Set((colorGrupos()[F.dr.color] || []).map(p => p.id));
+  const filas = Object.entries(F.dr.q).filter(([id, q]) => ids.has(id) && +q > 0);
+  if (!filas.length) return aviso('Escribe la cantidad de al menos una talla');
+  F.d.lineas = F.d.lineas.filter(l => l.productoId);
+  filas.forEach(([id, q]) => {
+    const precio = precioDefecto(porId('productos', id)), l = F.d.lineas.find(x => x.productoId === id && +x.precio === precio);
+    if (l) l.cantidad = (+l.cantidad || 0) + (+q); else F.d.lineas.push({ productoId: id, cantidad: +q, precio, descuento: 0 });
+  });
+  const n = filas.length; F.dr = { color: '', precio: '', q: {} };
+  pintarLineas(); pintarRolloDoc(); aviso('Rollo agregado (' + n + ' tallas) ✓');
 }
 function nuevoContactoRapido(col, sel) {
   const n = prompt(col === 'clientes' ? 'Nombre del cliente nuevo:' : 'Nombre del proveedor nuevo:');
@@ -514,6 +550,7 @@ function ponLinea(i, k, v) { F.d.lineas[i][k] = +v || 0; $('st-' + i).textConten
 function agregarLinea() { F.d.lineas.push({ productoId: '', cantidad: 1, precio: 0, descuento: 0 }); pintarLineas(); const el = $('lp-' + (F.d.lineas.length - 1)); el && el.focus(); }
 function quitarLinea(i) { F.d.lineas.splice(i, 1); if (!F.d.lineas.length) F.d.lineas.push({ productoId: '', cantidad: 1, precio: 0, descuento: 0 }); pintarLineas(); }
 function guardarDoc() {
+  if (F.modoDoc === 'rollo' && Object.values(F.dr.q).some(q => +q > 0)) agregarRolloDoc(); // rollo escrito pero sin agregar
   const d = F.d; d.lineas = d.lineas.filter(l => l.productoId && +l.cantidad > 0);
   if (!d.fecha) return aviso('Falta la fecha');
   if (!d.lineas.length) { d.lineas.push({ productoId: '', cantidad: 1, precio: 0 }); pintarLineas(); return aviso('Agrega al menos un producto con cantidad'); }
@@ -912,15 +949,16 @@ function vTallerResumen() {
   const pers = S.personas.filter(p => p.activo !== false || regs.some(r => r.personaId === p.id));
   const fila = per => { const rs = regs.filter(r => r.personaId === per.id); const m = k => rs.filter(r => r.maquina === k).reduce((t, r) => t + pagoReg(r), 0); return { per, rec: m('recta'), rem: m('remalle'), com: m('completa'), tot: rs.reduce((t, r) => t + pagoReg(r), 0), u: rs.reduce((t, r) => t + +r.cantidad, 0) }; };
   const fs = pers.map(fila); const T = k => fs.reduce((t, f) => t + f[k], 0);
-  const prendas = S.prendas.map(p => { const rs = regs.filter(r => r.prendaId === p.id); const u = k => rs.filter(r => r.maquina === k).reduce((t, r) => t + +r.cantidad, 0); return { p, rec: u('recta'), rem: u('remalle'), com: u('completa') }; }).filter(x => x.rec + x.rem + x.com);
-  return `<div class="cifras">${cifra('Total a pagar de todos', sol(T('tot')))}${cifra('Prendas trabajadas', num(T('u')))}</div>
+  const prendas = S.prendas.map(p => { const rs = regs.filter(r => r.prendaId === p.id); const u = k => rs.filter(r => r.maquina === k).reduce((t, r) => t + +r.cantidad, 0); return { p, rec: u('recta'), rem: u('remalle'), com: u('completa'), real: prendasReales(rs) }; }).filter(x => x.rec + x.rem + x.com);
+  return `<div class="cifras">${cifra('Total a pagar de todos', sol(T('tot')))}${cifra('Prendas trabajadas', num(prendasReales(regs)))}</div>
     <h3>Pago por persona</h3>
     <div class="lista tabla-caja"><table class="tabla"><tr><th>Persona</th><th>Recta</th><th>Remalle</th><th>Completa</th><th>Total</th></tr>
     ${fs.map(f => `<tr onclick="ir('t:${f.per.id}')" style="cursor:pointer"><td>${esc(f.per.nombre)}</td><td>${sol(f.rec)}</td><td>${sol(f.rem)}</td><td>${sol(f.com)}</td><td><b>${sol(f.tot)}</b></td></tr>`).join('')}
     <tr class="total"><td>Total</td><td>${sol(T('rec'))}</td><td>${sol(T('rem'))}</td><td>${sol(T('com'))}</td><td>${sol(T('tot'))}</td></tr></table></div>
     <h3>Unidades por prenda</h3>
-    <div class="lista tabla-caja"><table class="tabla"><tr><th>Prenda</th><th>Recta</th><th>Remalle</th><th>Completa</th></tr>
-    ${prendas.map(x => `<tr><td>${esc(x.p.nombre)}</td><td>${num(x.rec)}</td><td>${num(x.rem)}</td><td>${num(x.com)}</td></tr>`).join('') || '<tr><td colspan="4" class="vacio">Sin registros</td></tr>'}</table></div>`;
+    <div class="lista tabla-caja"><table class="tabla"><tr><th>Prenda</th><th>Prendas reales</th><th>Recta</th><th>Remalle</th><th>Completa</th></tr>
+    ${prendas.map(x => `<tr><td>${esc(x.p.nombre)}</td><td><b>${num(x.real)}</b></td><td>${num(x.rec)}</td><td>${num(x.rem)}</td><td>${num(x.com)}</td></tr>`).join('') || '<tr><td colspan="5" class="vacio">Sin registros</td></tr>'}</table></div>
+    <p class="ayuda">“Prendas reales” cuenta cada prenda una sola vez, aunque tenga recta y remalle.</p>`;
 }
 function vRemalle() {
   const s = SEM(), rp = remallePendiente(s.fin);
