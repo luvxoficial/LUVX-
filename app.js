@@ -507,7 +507,7 @@ function elegirProd(i, val) {
   const p = S.productos.find(x => x.codigo === cod) || S.productos.find(x => x.nombre.toLowerCase() === val.trim().toLowerCase());
   if (!p) { aviso('Elige un producto de la lista'); return; }
   const l = F.d.lineas[i]; l.productoId = p.id;
-  l.precio = F.col === 'ventas' ? +p.precio || 0 : r2(ultimoCosto(p.id) || stockHoy(p.id).prom || l.precio || 0);
+  l.precio = F.col === 'ventas' ? +p.precio || 0 : r2(+p.costo || ultimoCosto(p.id) || stockHoy(p.id).prom || l.precio || 0);
   setTimeout(pintarLineas, 0);
 }
 function ponLinea(i, k, v) { F.d.lineas[i][k] = +v || 0; $('st-' + i).textContent = sol(totalLinea(F.d.lineas[i])); $('doc-total').textContent = sol(totalDoc(F.d)); }
@@ -539,26 +539,34 @@ function listaProductos() {
   return ps.slice(0, 300).map(p => {
     const s = stockHoy(p.id);
     return `<div class="fila" onclick="fichaProducto('${p.id}')">
-      <div class="cuerpo"><div class="tit">${esc(p.nombre)}</div><div class="sub">Cód. ${esc(p.codigo)} · ${esc(p.categoria)} · venta ${sol(p.precio)} · costo ${sol(s.prom)}</div></div>
+      <div class="cuerpo"><div class="tit">${esc(p.nombre)}</div><div class="sub">Cód. ${esc(p.codigo)} · ${esc(p.categoria)} · venta ${sol(p.precio)} · costo ${sol(+p.costo || s.prom)}</div></div>
       <div class="der"><span class="monto ${s.q < 0 ? 'neg' : ''}">${num(s.q)}</span><small>${sol(s.v)}</small></div></div>`;
   }).join('');
 }
 function fichaProducto(id) {
   const p = porId('productos', id), s = stockHoy(id);
   abrirModal(esc(p.nombre), `
-    <div class="cifras">${cifra('Existencia', num(s.q) + ' ' + esc(p.medida || ''))}${cifra('Costo unitario', sol(s.prom))}${cifra('Costo total', sol(s.v))}${cifra('Precio de venta', sol(p.precio))}</div>
+    <div class="cifras">${cifra('Existencia', num(s.q) + ' ' + esc(p.medida || ''))}${cifra('Costo de compra', sol(+p.costo || ultimoCosto(id) || s.prom))}${cifra('Costo total', sol(s.v))}${cifra('Precio de venta', sol(p.precio))}</div>
     <p class="ayuda">Código ${esc(p.codigo)} · ${esc(p.categoria)}</p>
     <div class="acciones"><button class="btn" onclick="formProducto('${id}')">Editar</button><button class="btn" onclick="formAjuste('${id}')">Ajustar stock</button><button class="btn" onclick="verKardex('${id}')">Ver kardex</button></div>`, '');
 }
+const claveModelo = x => (x.categoria || '') + '|' + ((String(x.nombre || '').match(/\(([^)]*)\)\s*$/) || [])[1] || '');
+const etiquetaModelo = x => (x.categoria || '') + (claveModelo(x).split('|')[1] ? ' (' + claveModelo(x).split('|')[1] + ')' : '');
+const grupoModelo = x => S.productos.filter(y => claveModelo(y) === claveModelo(x));
 function formProducto(id) {
   const p = id ? copia(porId('productos', id)) : { id: nid(), codigo: String(Math.max(0, ...S.productos.map(x => +x.codigo || 0)) + 1), categoria: UI.cat || '', nombre: '', medida: 'UND', precio: 0 };
   F = { col: 'productos', d: p, nuevo: !id, ini: { q: 0, c: 0 } };
+  const costoMostrar = id ? (+p.costo || ultimoCosto(id) || '') : '';
+  F.costoMostrar = costoMostrar; F.aplicar = false;
+  const nGrupo = id ? grupoModelo(p).length : 0;
   abrirModal(id ? 'Editar producto' : 'Nuevo producto', `
     <div class="dos"><div class="campo"><label>Código</label><input value="${esc(p.codigo)}" oninput="F.d.codigo=this.value.trim()"></div>
     <div class="campo"><label>Categoría</label><input list="dl-cat" value="${esc(p.categoria)}" oninput="F.d.categoria=this.value.trim()"></div></div>
     <div class="campo"><label>Nombre</label><input value="${esc(p.nombre)}" oninput="F.d.nombre=this.value"></div>
     <div class="dos"><div class="campo"><label>Medida</label><input value="${esc(p.medida)}" oninput="F.d.medida=this.value"></div>
     <div class="campo"><label>Precio de venta (S/)</label><input type="number" inputmode="decimal" step="0.01" value="${p.precio}" oninput="F.d.precio=+this.value||0"></div></div>
+    <div class="campo"><label>Costo de compra (S/)</label><input type="number" inputmode="decimal" step="0.01" min="0" value="${costoMostrar}" placeholder="0.00" oninput="F.d.costo=+this.value||0"><div class="ayuda">Este costo aparece solo al comprar este producto. Cámbialo aquí cuando suba o baje.</div></div>
+    ${id && nGrupo > 1 ? `<label class="check" style="background:var(--pri2);border-radius:10px;margin-bottom:12px"><input type="checkbox" onchange="F.aplicar=this.checked"><span>Poner este mismo costo a todas las tallas y colores de «${esc(etiquetaModelo(p))}» (${nGrupo} productos)</span></label>` : ''}
     ${id ? '<p class="ayuda">La existencia y el costo se calculan solos con las compras, ventas y ajustes.</p>' : `
     <h3>Stock que ya tengo (opcional)</h3>
     <div class="dos"><div class="campo"><label>Cantidad</label><input type="number" inputmode="decimal" min="0" value="0" oninput="F.ini.q=+this.value||0"></div>
@@ -570,9 +578,18 @@ function guardarProducto() {
   if (!p.nombre) return aviso('Falta el nombre');
   if (!p.codigo) return aviso('Falta el código');
   if (S.productos.some(x => x.codigo === p.codigo && x.id !== p.id)) return aviso('Ese código ya existe');
+  let msgCosto = '';
+  if (F.aplicar) {
+    const c = +p.costo || +F.costoMostrar || 0;
+    if (!(c > 0)) return aviso('Escribe el costo para ponerlo a todos');
+    p.costo = c;
+    const otros = grupoModelo(p).filter(x => x.id !== p.id);
+    otros.forEach(x => guardar('productos', { ...copia(x), costo: c }));
+    msgCosto = ' · costo puesto a ' + otros.length + ' productos más';
+  }
   guardar('productos', p);
-  if (F.nuevo && F.ini.q > 0) guardar('compras', { id: nid(), fecha: hoy(), factura: '', proveedorId: '', inicial: true, comentario: 'Stock inicial', lineas: [{ productoId: p.id, cantidad: F.ini.q, precio: F.ini.c, descuento: 0 }] });
-  cerrarModal(); aviso('Producto guardado ✓');
+  if (F.nuevo && F.ini.q > 0) guardar('compras', { id: nid(), fecha: hoy(), factura: '', proveedorId: '', inicial: true, comentario: 'Stock inicial', lineas: [{ productoId: p.id, cantidad: F.ini.q, precio: F.ini.c || p.costo || 0, descuento: 0 }] });
+  cerrarModal(); aviso('Producto guardado ✓' + msgCosto);
 }
 function borrarProducto() {
   if ((inventario().porProd[F.d.id] || []).length) return aviso('No se puede borrar: tiene movimientos. Puedes cambiarle el nombre.');
@@ -737,12 +754,12 @@ function pintarRegistro() {
   const nombres = (r.ops || []).map(id => prenda?.ops.find(o => o.id === id)?.nombre).filter(Boolean);
   const grupos = r.maquina === 'completa' ? [['recta', 'Recta'], ['remalle', 'Remalle']] : [[r.maquina, '']];
   const otrasPersonas = S.personas.filter(p => p.activo !== false || p.id === r.personaId);
-  const prods = productosDePrenda(prenda, F.verTodos, r.productoId), porCat = {};
+  const prods = productosDePrenda(prenda, r.fecha, r.productoId), porCat = {}, cSem = comprasSemana(r.fecha);
   prods.forEach(p => (porCat[p.categoria] = porCat[p.categoria] || []).push(p));
-  const opcionesProd = Object.entries(porCat).map(([c, ps]) => `<optgroup label="${esc(c)}">${ps.map(p => `<option value="${p.id}" ${p.id === r.productoId ? 'selected' : ''}>${esc(p.nombre)} · stock ${num(stockHoy(p.id).q)}</option>`).join('')}</optgroup>`).join('');
+  const opcionesProd = Object.entries(porCat).map(([c, ps]) => `<optgroup label="${esc(c)}">${ps.map(p => `<option value="${p.id}" ${p.id === r.productoId ? 'selected' : ''}>${esc(p.nombre)} · compradas ${num(cSem[p.id] || 0)}</option>`).join('')}</optgroup>`).join('');
   const bloqueProd = `<div class="campo"><label>Prenda exacta (talla y color)</label>
       <select onchange="F.d.productoId=this.value"><option value="">— Elegir —</option>${opcionesProd}</select>
-      <button class="btn chico" style="margin-top:6px" onclick="F.verTodos=!F.verTodos;pintarRegistro()">${F.verTodos ? 'Mostrar solo los comprados' : 'Mostrar todos'}</button></div>`;
+      <div class="ayuda">${prods.length ? 'Solo prendas compradas en la semana ' + textoSemana(semanaDe(r.fecha)) + '.' : 'No hay compras de esta prenda en la semana ' + textoSemana(semanaDe(r.fecha)) + '. Registra primero la compra.'}</div></div>`;
   const etq = etqOp();
   const bloqueEtq = etq && r.maquina === 'recta' ? `<label class="check" style="background:var(--aviso2);border-radius:10px;margin-bottom:12px"><input type="checkbox" ${r.sinEtiqueta ? 'checked' : ''} onchange="regSinEtq(this.checked)"><span>Sin etiqueta (no se pegó etiqueta)</span></label>` : '';
   $('reg-form').innerHTML = `
@@ -769,13 +786,16 @@ function pintarRegistro() {
   regCalc();
 }
 function regLimpiar() { const u = new Set(universo(porId('prendas', F.d.prendaId), F.d.maquina, F.d.fecha).map(o => o.id)); F.d.ops = F.d.ops.filter(id => u.has(id)); }
-function productosDePrenda(prenda, todos, actualId) { // productos de ese tipo (polera, casaca, baggy…) que ya compraste
+function productosDePrenda(prenda, fecha, actualId) { // solo lo que entró por compras en la semana de esa fecha
   if (!prenda) return [];
-  const n = prenda.nombre.trim().toLowerCase(), comp = new Set();
-  S.compras.forEach(c => (c.lineas || []).forEach(l => comp.add(l.productoId)));
-  const todosLos = S.productos.filter(p => (p.categoria || '').toLowerCase().startsWith(n));
-  const comprados = todosLos.filter(p => comp.has(p.id) || p.id === actualId);
-  return (todos || !comprados.length ? todosLos : comprados).slice().sort(ordenProd);
+  const n = prenda.nombre.trim().toLowerCase(), sem = semanaDe(fecha), comp = new Set();
+  S.compras.filter(c => enRango(c.fecha, sem.inicio, sem.fin)).forEach(c => (c.lineas || []).forEach(l => comp.add(l.productoId)));
+  return S.productos.filter(p => (p.categoria || '').toLowerCase().startsWith(n) && (comp.has(p.id) || p.id === actualId)).sort(ordenProd);
+}
+function comprasSemana(fecha) { // unidades compradas por producto en la semana de esa fecha
+  const sem = semanaDe(fecha), m = {};
+  S.compras.filter(c => enRango(c.fecha, sem.inicio, sem.fin)).forEach(c => (c.lineas || []).forEach(l => { m[l.productoId] = (m[l.productoId] || 0) + (+l.cantidad || 0); }));
+  return m;
 }
 function etqOp() { const p = porId('prendas', F.d.prendaId); return p && /baggy/i.test(p.nombre) ? p.ops.find(o => /etiqueta/i.test(o.nombre)) : null; }
 function regResetEtq() { if (F.d.sinEtiqueta) { F.d.sinEtiqueta = false; F.d.tipo = 'todo'; F.d.ops = []; } }
