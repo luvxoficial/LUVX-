@@ -251,14 +251,16 @@ function idCompleta() {
   return yo ? yo.id : '';
 }
 // Lo que falta de la prenda en un registro, separado en recta y remalle, para anotarlo a quien completa
+function etqOpPrenda(p) { return p && /baggy/i.test(p.nombre) ? p.ops.find(o => /etiqueta/i.test(o.nombre)) : null; }
 function partesFaltantes(r) {
   const p = porId('prendas', r.prendaId), quien = idCompleta();
   if (!p || !quien) return [];
+  const etq = r.sinEtiqueta ? etqOpPrenda(p) : null; // prenda sin etiqueta: esa operación no la hace nadie
   const hechas = new Set(opsHechas(r, p).map(o => o.id)), out = [];
   for (const [m, suf] of [['recta', 'a'], ['remalle', 'b']]) {
-    const u = universo(p, m, r.fecha), falt = u.filter(o => !hechas.has(o.id));
+    const u = universo(p, m, r.fecha), falt = u.filter(o => !hechas.has(o.id) && !(etq && o.id === etq.id));
     if (!falt.length) continue;
-    const todo = falt.length === u.length;
+    const todo = falt.length === u.length && !(etq && u.some(o => o.id === etq.id));
     out.push({ id: r.id + '_' + suf, personaId: quien, fecha: r.fecha, prendaId: r.prendaId, productoId: r.productoId || '', cantidad: +r.cantidad, maquina: m, tipo: todo ? 'todo' : 'solo', ops: todo ? [] : falt.map(o => o.id), origenId: r.id, creado: (r.creado || 0) + 1 });
   }
   return out;
@@ -273,7 +275,8 @@ function gruposCompletos() {
     const todos = [r, ...hijos];
     if (todos.some(x => +x.cantidad !== +r.cantidad || x.prendaId !== r.prendaId)) return;
     const hechas = new Set(todos.flatMap(x => opsHechas(x, p).map(o => o.id)));
-    if (universo(p, 'completa', r.fecha).every(o => hechas.has(o.id))) todos.forEach(x => excl.add(x.id));
+    const etq = r.sinEtiqueta ? etqOpPrenda(p) : null;
+    if (universo(p, 'completa', r.fecha).every(o => hechas.has(o.id) || (etq && o.id === etq.id))) todos.forEach(x => excl.add(x.id));
   });
   return cache.grupos = excl;
 }
@@ -408,9 +411,9 @@ function vInicio() {
     <h3>Taller</h3>
     <div class="cifras">
       ${cifra('A pagar esta semana', sol(pagar), '', "ir('tresumen')")}
-      ${cifra('Prendas registradas', num(regs.reduce((t, r) => t + +r.cantidad, 0)), '', "ir('tresumen')")}
+      ${cifra('Prendas registradas', num(prendasReales(regs)), '', "ir('tresumen')")}
       ${cifra('Remalle pendiente', sol(rp), '', "ir('remalle')")}
-      ${cifra('Registros', regs.length, '', "ir('tresumen')")}
+      ${cifra('Registros', gruposDe(regs).length, '', "ir('tresumen')")}
     </div>
     <div class="acciones">
       <button class="btn pri" onclick="formVenta()">+ Venta</button>
@@ -760,16 +763,47 @@ function vPersona(pid) {
   const regs = S.registros.filter(r => r.personaId === pid && enRango(r.fecha, s.inicio, s.fin)).sort((a, b) => a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : (a.creado || 0) - (b.creado || 0));
   const total = regs.reduce((t, r) => t + pagoReg(r), 0);
   const porMaq = m => regs.filter(r => r.maquina === m).reduce((t, r) => t + pagoReg(r), 0);
-  return `<div class="cifras">${cifra('A pagar a ' + esc(per.nombre), sol(total))}${cifra('Prendas', num(regs.reduce((t, r) => t + +r.cantidad, 0)))}</div>
+  const gr = gruposDe(regs); UI.grp = {}; gr.forEach(g => UI.grp[g.key] = g.rs.map(r => r.id));
+  return `<div class="cifras">${cifra('A pagar a ' + esc(per.nombre), sol(total))}${cifra('Prendas', num(prendasReales(regs)))}</div>
     <p class="ayuda" style="margin:-2px 2px 10px">Recta ${sol(porMaq('recta'))} · Remalle ${sol(porMaq('remalle'))} · Completa ${sol(porMaq('completa'))}</p>
-    <div class="lista">${regs.map(lineaRegistro).join('') || '<div class="vacio">Sin registros en esta semana.<br>Toca “+ Registro” para anotar.</div>'}</div>`;
+    <div class="lista">${gr.map(lineaGrupo).join('') || '<div class="vacio">Sin registros en esta semana.<br>Toca “+ Registro” para anotar.</div>'}</div>`;
+}
+// Una prenda real = un trabajo y lo que "falta" de ese trabajo (recta + remalle de la misma prenda cuentan una sola vez)
+const grupoReg = r => (r.origenId && porId('registros', r.origenId)) ? r.origenId : r.id;
+function prendasReales(regs) {
+  const m = {}; regs.forEach(r => { const k = grupoReg(r); m[k] = Math.max(m[k] || 0, +r.cantidad || 0); });
+  return Object.values(m).reduce((t, x) => t + x, 0);
+}
+function gruposDe(regs) {
+  const m = new Map(); regs.forEach(r => { const k = grupoReg(r); if (!m.has(k)) m.set(k, []); m.get(k).push(r); });
+  return [...m].map(([key, rs]) => ({ key, rs }));
+}
+const minus1 = t => t.charAt(0).toLowerCase() + t.slice(1);
+function lineaGrupo(g) {
+  const rs = g.rs.slice().sort((a, b) => (a.creado || 0) - (b.creado || 0));
+  if (rs.length === 1) return lineaRegistro(rs[0]);
+  const b = rs[0], p = porId('prendas', b.prendaId), prod = porId('productos', b.productoId);
+  const maqs = ['recta', 'remalle', 'completa'].filter(m => rs.some(r => r.maquina === m));
+  const o = b.origenId ? porId('registros', b.origenId) : null;
+  const marca = o ? ` <span class="chip gris">falta de ${esc(porId('personas', o.personaId)?.nombre || '…')}</span>${o.sinEtiqueta ? ' <span class="chip gris">sin etiqueta</span>' : ''}` : '';
+  const pago = rs.reduce((t, r) => t + pagoReg(r), 0), unit = rs.reduce((t, r) => t + pagoUnit(r), 0);
+  const detalle = rs.map(r => `<b>${MAQ[r.maquina]}</b> ${esc(minus1(textoOps(r)))}`).join(' · ');
+  return `<div class="fila" onclick="abrirGrupo('${g.key}')"><div class="cuerpo reg-linea"><b>${fCorta(b.fecha)}</b> · ${esc(prod?.nombre || p?.nombre || '?')} ×${num(Math.max(...rs.map(r => +r.cantidad || 0)))} <span class="chip comp">${maqs.map(m => MAQ[m]).join(' + ')}</span> · <span style="color:var(--suave)">${detalle}</span>${marca}</div>
+    <div class="der"><span class="monto">${sol(pago)}</span><small>${sol(unit)} c/u</small></div></div>`;
+}
+function abrirGrupo(key) {
+  const rs = ((UI.grp || {})[key] || []).map(id => porId('registros', id)).filter(Boolean);
+  abrirModal('Detalle de la prenda', `<p class="ayuda" style="margin:0 2px 8px">Toca una parte para editarla o borrarla.</p><div class="lista">${rs.map(lineaRegistro).join('')}</div>`, '');
 }
 function lineaRegistro(r) {
   const p = porId('prendas', r.prendaId), prod = porId('productos', r.productoId);
   const chip = r.maquina === 'recta' ? 'chip' : r.maquina === 'remalle' ? 'chip rem' : 'chip comp';
   let marca = '';
-  if (r.origenId) { const o = porId('registros', r.origenId); marca = ` <span class="chip gris">falta de ${esc(porId('personas', o?.personaId)?.nombre || '…')}</span>`; }
-  else if (r.completar && S.registros.some(x => x.origenId === r.id)) marca = ` <span class="chip gris">resto a ${esc(porId('personas', idCompleta())?.nombre || 'YO')}</span>`;
+  if (r.origenId) { const o = porId('registros', r.origenId); marca = ` <span class="chip gris">falta de ${esc(porId('personas', o?.personaId)?.nombre || '…')}</span>${o?.sinEtiqueta ? ' <span class="chip gris">sin etiqueta</span>' : ''}`; }
+  else if (r.completar && S.registros.some(x => x.origenId === r.id)) {
+    const hs = S.registros.filter(x => x.origenId === r.id), ms = ['recta', 'remalle', 'completa'].filter(m => hs.some(x => x.maquina === m));
+    marca = ` <span class="chip gris">resto a ${esc(porId('personas', idCompleta())?.nombre || 'YO')}${ms.length ? ' · ' + ms.map(m => MAQ[m]).join(' + ') : ''}</span>${r.sinEtiqueta ? ' <span class="chip gris">sin etiqueta</span>' : ''}`;
+  } else if (r.sinEtiqueta) marca = ' <span class="chip gris">sin etiqueta</span>';
   return `<div class="fila" onclick="formRegistro('${r.id}')"><div class="cuerpo reg-linea"><b>${fCorta(r.fecha)}</b> · ${esc(prod?.nombre || p?.nombre || '?')} ×${num(r.cantidad)} <span class="${chip}">${MAQ[r.maquina]}</span> · <span style="color:var(--suave)">${esc(textoOps(r))}</span>${marca}</div>
     <div class="der"><span class="monto">${sol(pagoReg(r))}</span><small>${sol(pagoUnit(r))} c/u</small></div></div>`;
 }
@@ -878,7 +912,7 @@ function guardarRollo() {
   });
   cerrarModal(); aviso('Rollo guardado ✓ (' + filas.length + ' registros)');
 }
-function etqOp() { const p = porId('prendas', F.d.prendaId); return p && /baggy/i.test(p.nombre) ? p.ops.find(o => /etiqueta/i.test(o.nombre)) : null; }
+function etqOp() { return etqOpPrenda(porId('prendas', F.d.prendaId)); }
 function regResetEtq() { if (F.d.sinEtiqueta) { F.d.sinEtiqueta = false; F.d.tipo = 'todo'; F.d.ops = []; } }
 function aplicarEtq(on) {
   const e = etqOp(); if (!e) return;
@@ -908,9 +942,10 @@ function regCalc() {
   const el = $('reg-resto'); if (!el) return;
   if (!F.completar) { el.textContent = 'No se anotará nada más.'; return; }
   const partes = F.d.prendaId ? partesFaltantes(F.d) : [], nom = porId('personas', idCompleta())?.nombre || '';
-  if (!partes.length) { el.textContent = 'Hizo toda la prenda: no falta nada para ' + nom + '.'; return; }
+  const nota = F.d.sinEtiqueta ? ' (la etiqueta no se anota a nadie: la prenda va sin etiqueta)' : '';
+  if (!partes.length) { el.textContent = 'Hizo toda la prenda: no falta nada para ' + nom + '.' + nota; return; }
   const tot = partes.reduce((s, x) => s + pagoUnit(x) * (+F.d.cantidad || 0), 0);
-  el.innerHTML = 'A ' + esc(nom) + ' se le anotará: ' + partes.map(x => '<b>' + MAQ[x.maquina] + '</b> ' + esc(x.tipo === 'todo' ? 'todo completo' : textoOps(x).replace('Solo: ', ''))).join(' + ') + ' · <b>' + sol(tot) + '</b>';
+  el.innerHTML = 'A ' + esc(nom) + ' se le anotará: ' + partes.map(x => '<b>' + MAQ[x.maquina] + '</b> ' + esc(x.tipo === 'todo' ? 'todo completo' : textoOps(x).replace('Solo: ', ''))).join(' + ') + ' · <b>' + sol(tot) + '</b>' + nota;
 }
 function guardarRegistro() {
   if (F.rollo && F.nuevo) return guardarRollo();
