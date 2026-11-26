@@ -984,6 +984,16 @@ function borrarRegistro() {
   hijos.forEach(h => borrar('registros', h.id)); borrar('registros', F.d.id); cerrarModal();
 }
 
+// Cuenta cada prenda una sola vez, aunque tenga recta y remalle (completa + lo mayor entre recta y remalle)
+function prendasReales(regs) {
+  const m = {};
+  regs.forEach(r => {
+    const k = r.productoId || r.prendaId, o = m[k] || (m[k] = { rec: 0, rem: 0, com: 0 });
+    const q = +r.cantidad || 0;
+    if (r.maquina === 'recta') o.rec += q; else if (r.maquina === 'remalle') o.rem += q; else o.com += q;
+  });
+  return Object.values(m).reduce((t, o) => t + o.com + Math.max(o.rec, o.rem), 0);
+}
 function vTallerResumen() {
   const s = SEM();
   const regs = S.registros.filter(r => enRango(r.fecha, s.inicio, s.fin));
