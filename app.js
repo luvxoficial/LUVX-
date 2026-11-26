@@ -251,16 +251,14 @@ function idCompleta() {
   return yo ? yo.id : '';
 }
 // Lo que falta de la prenda en un registro, separado en recta y remalle, para anotarlo a quien completa
-function etqOpPrenda(p) { return p && /baggy/i.test(p.nombre) ? p.ops.find(o => /etiqueta/i.test(o.nombre)) : null; }
 function partesFaltantes(r) {
   const p = porId('prendas', r.prendaId), quien = idCompleta();
   if (!p || !quien) return [];
-  const etq = r.sinEtiqueta ? etqOpPrenda(p) : null; // prenda sin etiqueta: esa operación no la hace nadie
   const hechas = new Set(opsHechas(r, p).map(o => o.id)), out = [];
   for (const [m, suf] of [['recta', 'a'], ['remalle', 'b']]) {
-    const u = universo(p, m, r.fecha), falt = u.filter(o => !hechas.has(o.id) && !(etq && o.id === etq.id));
+    const u = universo(p, m, r.fecha), falt = u.filter(o => !hechas.has(o.id));
     if (!falt.length) continue;
-    const todo = falt.length === u.length && !(etq && u.some(o => o.id === etq.id));
+    const todo = falt.length === u.length;
     out.push({ id: r.id + '_' + suf, personaId: quien, fecha: r.fecha, prendaId: r.prendaId, productoId: r.productoId || '', cantidad: +r.cantidad, maquina: m, tipo: todo ? 'todo' : 'solo', ops: todo ? [] : falt.map(o => o.id), origenId: r.id, creado: (r.creado || 0) + 1 });
   }
   return out;
@@ -275,8 +273,7 @@ function gruposCompletos() {
     const todos = [r, ...hijos];
     if (todos.some(x => +x.cantidad !== +r.cantidad || x.prendaId !== r.prendaId)) return;
     const hechas = new Set(todos.flatMap(x => opsHechas(x, p).map(o => o.id)));
-    const etq = r.sinEtiqueta ? etqOpPrenda(p) : null;
-    if (universo(p, 'completa', r.fecha).every(o => hechas.has(o.id) || (etq && o.id === etq.id))) todos.forEach(x => excl.add(x.id));
+    if (universo(p, 'completa', r.fecha).every(o => hechas.has(o.id))) todos.forEach(x => excl.add(x.id));
   });
   return cache.grupos = excl;
 }
@@ -411,9 +408,9 @@ function vInicio() {
     <h3>Taller</h3>
     <div class="cifras">
       ${cifra('A pagar esta semana', sol(pagar), '', "ir('tresumen')")}
-      ${cifra('Prendas registradas', num(prendasReales(regs)), '', "ir('tresumen')")}
+      ${cifra('Prendas registradas', num(regs.reduce((t, r) => t + +r.cantidad, 0)), '', "ir('tresumen')")}
       ${cifra('Remalle pendiente', sol(rp), '', "ir('remalle')")}
-      ${cifra('Registros', gruposDe(regs).length, '', "ir('tresumen')")}
+      ${cifra('Registros', regs.length, '', "ir('tresumen')")}
     </div>
     <div class="acciones">
       <button class="btn pri" onclick="formVenta()">+ Venta</button>
@@ -440,15 +437,56 @@ function vDocs(col) {
       <div class="der"><span class="monto">${sol(t)}</span>${extra}</div></div>`;
   }).join('');
   return `<div class="cifras">${cifra(esV ? 'Ventas de la semana' : 'Compras de la semana', sol(tot))}${esV ? cifra('Ganancia', sol(gan), gan >= 0 ? 'pos' : 'neg') : cifra('Documentos', docs.length)}</div>
+    ${esV ? '' : resumenCompras(s.inicio, s.fin)}
+    <h3>${esV ? 'Ventas' : 'Documentos de compra'}</h3>
     <div class="lista">${filas || `<div class="vacio">No hay ${col} en esta semana.</div>`}</div>`;
+}
+// ----- Resumen de compras por prenda (Baggy / Polera / Casaca) -----
+function resumenCompras(a, b) {
+  const sel = UI.cres || '';
+  const compras = comprasEntre(a, b);
+  const botones = `<div class="seg" style="margin-bottom:10px">${['Baggy', 'Polera', 'Casaca'].map(k =>
+    `<button class="${sel === k ? 'act' : ''}" onclick="UI.cres='${sel === k ? '' : k}';render()">${k}</button>`).join('')}</div>`;
+  const filasDe = pref => {
+    const m = {};
+    compras.forEach(c => (c.lineas || []).forEach(l => {
+      const p = porId('productos', l.productoId); if (!p) return;
+      if (!(p.categoria || '').toLowerCase().startsWith(pref.toLowerCase())) return;
+      const o = m[p.id] || (m[p.id] = { p, q: 0, v: 0 });
+      o.q += +l.cantidad || 0; o.v += totalLinea(l);
+    }));
+    return Object.values(m);
+  };
+  // Sin selección: totales por prenda
+  if (!sel) {
+    const t = ['Baggy', 'Polera', 'Casaca'].map(k => { const f = filasDe(k); return { k, q: f.reduce((s, x) => s + x.q, 0), v: f.reduce((s, x) => s + x.v, 0) }; });
+    return `<h3>Lo comprado por prenda</h3>${botones}
+      <div class="lista tabla-caja"><table class="tabla"><tr><th>Prenda</th><th>Cantidad</th><th>Total</th></tr>
+      ${t.map(x => `<tr onclick="UI.cres='${x.k}';render()" style="cursor:pointer"><td>${x.k}</td><td>${num(x.q)}</td><td>${sol(x.v)}</td></tr>`).join('')}
+      <tr class="total"><td>Total</td><td>${num(t.reduce((s, x) => s + x.q, 0))}</td><td>${sol(t.reduce((s, x) => s + x.v, 0))}</td></tr></table></div>
+      <p class="ayuda">Toca Baggy, Polera o Casaca para ver el detalle por tipo, talla y color.</p>`;
+  }
+  // Con selección: detalle agrupado por tipo/modelo
+  const filas = filasDe(sel), grupos = {};
+  filas.forEach(x => { const k = etiquetaModelo(x.p); (grupos[k] = grupos[k] || []).push(x); });
+  const totQ = filas.reduce((s, x) => s + x.q, 0), totV = filas.reduce((s, x) => s + x.v, 0);
+  if (!filas.length) return `<h3>Lo comprado por prenda</h3>${botones}<div class="lista"><div class="vacio">No hay compras de ${sel} en esta semana.</div></div>`;
+  return `<h3>Lo comprado por prenda</h3>${botones}
+    <div class="cifras">${cifra('Total de ' + sel, num(totQ) + ' prendas')}${cifra('Importe total', sol(totV))}</div>
+    ${Object.keys(grupos).sort().map(k => {
+      const g = grupos[k].sort((x, y) => ordenProd(x.p, y.p));
+      return `<h3>${esc(k)}</h3><div class="lista tabla-caja"><table class="tabla"><tr><th>Color y talla</th><th>Cant.</th><th>Precio</th><th>Total</th></tr>
+      ${g.map(x => { const pa = partesProd(x.p); return `<tr><td>${esc((pa.color + ' ' + pa.talla).trim() || x.p.nombre)}</td><td>${num(x.q)}</td><td>${sol(x.q ? x.v / x.q : 0)}</td><td>${sol(x.v)}</td></tr>`; }).join('')}
+      <tr class="total"><td>Subtotal</td><td>${num(g.reduce((s, x) => s + x.q, 0))}</td><td></td><td>${sol(g.reduce((s, x) => s + x.v, 0))}</td></tr></table></div>`;
+    }).join('')}`;
 }
 function formVenta(id) { formDoc('ventas', id); }
 function formCompra(id) { formDoc('compras', id); }
 function formDoc(col, id) {
   const esV = col === 'ventas';
   const d = id ? copia(porId(col, id)) : { id: nid(), fecha: fechaPorDefecto(), factura: '', comentario: '', lineas: [], ...(esV ? { clienteId: '' } : { proveedorId: '' }) };
-  F = { col, d, nuevo: !id, pr: '', modoDoc: 'prenda', dp: { productoId: '', cantidad: '' }, dr: { color: '', q: {} } };
-  F.pr = (prendasDoc()[0] || {}).id || '';
+  if (!d.lineas.length) d.lineas.push({ productoId: '', cantidad: 1, precio: 0, descuento: 0 });
+  F = { col, d, nuevo: !id, modoDoc: 'prenda', dr: { color: '', precio: '', q: {} } };
   const contactos = esV ? S.clientes : S.proveedores, campo = esV ? 'clienteId' : 'proveedorId';
   const cuerpo = `
     <div class="dos">
@@ -462,75 +500,50 @@ function formDoc(col, id) {
         ${contactos.map(c => `<option value="${c.id}" ${c.id === d[campo] ? 'selected' : ''}>${esc(c.nombre)}</option>`).join('')}
         <option value="__nuevo">+ Agregar nuevo…</option>
       </select></div>`}
-    <h3>Agregar prendas</h3>
-    <div id="agregar-doc"></div>
-    <h3>Lo que llevas ${esV ? 'vendido' : 'comprado'}</h3>
+    <h3>Productos</h3>
     <div id="lineas"></div>
+    <div class="campo"><label>Cómo agregar</label><div class="seg" id="doc-modo"></div></div>
+    <div id="rollo-doc"></div>
+    <button class="btn ancho" id="btn-add-linea" onclick="agregarLinea()">+ Agregar producto</button>
     <div class="calc" style="margin-top:12px"><span>Total</span><b id="doc-total"></b></div>
     <div class="campo"><label>Comentario (opcional)</label><input value="${esc(d.comentario || '')}" oninput="F.d.comentario=this.value"></div>`;
   abrirModal((id ? 'Editar ' : 'Nueva ') + (esV ? 'venta' : 'compra'), cuerpo,
     `${id ? `<button class="btn peligro" onclick="borrarDoc()">Borrar</button>` : ''}<button class="btn" onclick="cerrarModal()">Cancelar</button><button class="btn pri" onclick="guardarDoc()">Guardar</button>`);
-  pintarLineas(); pintarAgregar();
+  pintarLineas(); pintarRolloDoc();
 }
-// ----- Agregar prendas igual que en el registro del taller: prenda → una prenda o por rollo -----
-function prendaDeProd(p) { const c = (p.categoria || '').toLowerCase(); const x = S.prendas.find(y => c.startsWith(y.nombre.trim().toLowerCase())); return x ? x.id : '__otros'; }
-function stockRestante(pid) { return stockDisponible(pid) - F.d.lineas.filter(l => l.productoId === pid).reduce((t, l) => t + (+l.cantidad || 0), 0); }
-const visibleDoc = p => F.col !== 'ventas' || stockRestante(p.id) > 0; // en ventas solo lo que hay en stock
-function prendasDoc() {
-  const out = S.prendas.map(x => ({ id: x.id, nombre: x.nombre }));
-  if (S.productos.some(p => visibleDoc(p) && prendaDeProd(p) === '__otros')) out.push({ id: '__otros', nombre: 'Otros' });
-  return out;
-}
-const prodsDoc = () => S.productos.filter(p => prendaDeProd(p) === F.pr && visibleDoc(p)).sort(ordenProd);
+// ----- Agregar por rollo (color + cantidad por talla) en ventas y compras -----
+function colorGrupos() { const g = {}; S.productos.filter(p => F.col !== 'ventas' || stockDisponible(p.id) > 0).forEach(p => { const k = claveColor(p); (g[k] = g[k] || []).push(p); }); return g; }
 function precioDefecto(p) { return F.col === 'ventas' ? (+p.precio || 0) : r2(+p.costo || ultimoCosto(p.id) || stockHoy(p.id).prom || 0); }
-function docPrenda(id) { F.pr = id; F.dp = { productoId: '', cantidad: '' }; F.dr = { color: '', q: {} }; pintarAgregar(); }
-function docModo(m) { F.modoDoc = m; pintarAgregar(); }
-function docColor(k) { F.dr.color = k; F.dr.q = {}; pintarAgregar(); }
+function docModo(m) { F.modoDoc = m; pintarRolloDoc(); }
+function docColor(k) { F.dr.color = k; F.dr.q = {}; pintarRolloDoc(); }
 function docQ(id, v) { F.dr.q[id] = +v || 0; docCalc(); }
 function docCalc() { const t = $('rd-total'); if (t) t.textContent = num(Object.values(F.dr.q).reduce((a, q) => a + (+q || 0), 0)) + ' prendas'; }
-function pintarAgregar() {
-  const esV = F.col === 'ventas', box = $('agregar-doc'); if (!box) return;
-  const prs = prendasDoc(); if (!prs.some(x => x.id === F.pr)) F.pr = (prs[0] || {}).id || '';
-  const prods = prodsDoc(), porCat = {};
-  prods.forEach(p => (porCat[p.categoria] = porCat[p.categoria] || []).push(p));
-  const vacio = esV ? 'No hay prendas con stock de este tipo.' : 'No hay productos de este tipo.';
-  const bloqueUna = `<div class="campo"><label>Prenda exacta (talla y color)</label>
-      <select onchange="F.dp.productoId=this.value"><option value="">— Elegir —</option>${Object.entries(porCat).map(([c, ps]) => `<optgroup label="${esc(c)}">${ps.map(p => `<option value="${p.id}" ${p.id === F.dp.productoId ? 'selected' : ''}>${esc(p.nombre)}${esV ? ' · stock ' + num(stockRestante(p.id)) : ''}</option>`).join('')}</optgroup>`).join('')}</select>
-      <div class="ayuda">${prods.length ? (esV ? 'Solo prendas con stock.' : '') : vacio}</div></div>
-    <div class="campo"><label>Cantidad</label><input type="number" inputmode="numeric" min="0" value="${F.dp.cantidad || ''}" placeholder="0" oninput="F.dp.cantidad=+this.value||0"></div>
-    <button class="btn pri ancho" style="margin-bottom:10px" onclick="agregarUnaDoc()">+ Agregar a la lista</button>`;
-  const colores = {}; prods.forEach(p => { const k = claveColor(p); (colores[k] = colores[k] || []).push(p); });
-  const tallas = (colores[F.dr.color] || []).slice().sort(ordenTalla);
-  const bloqueRollo = `<div class="campo"><label>Color del rollo</label>
-      <select onchange="docColor(this.value)"><option value="">— Elegir color —</option>${Object.keys(colores).sort().map(k => `<option value="${esc(k)}" ${k === F.dr.color ? 'selected' : ''}>${esc(k)}</option>`).join('')}</select>
-      <div class="ayuda">${prods.length ? (esV ? 'Solo colores con stock.' : '') : vacio}</div></div>
-    ${tallas.length ? `<div class="campo"><label>Cantidad por talla</label><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(78px,1fr));gap:8px">${tallas.map(p => `<div><label style="margin-bottom:2px">${esc(partesProd(p).talla)}</label><input class="inp" type="number" inputmode="numeric" min="0" value="${F.dr.q[p.id] || ''}" placeholder="0" oninput="docQ('${p.id}',this.value)">${esV ? `<div class="ayuda">stock ${num(stockRestante(p.id))}</div>` : ''}</div>`).join('')}</div></div>
+function pintarRolloDoc() {
+  const esV = F.col === 'ventas', box = $('rollo-doc'); if (!box) return;
+  $('doc-modo').innerHTML = [['prenda', 'Una prenda'], ['rollo', 'Por rollo (varias tallas)']].map(([k, t]) => `<button class="${F.modoDoc === k ? 'act' : ''}" onclick="docModo('${k}')">${t}</button>`).join('');
+  $('btn-add-linea').classList.toggle('oculto', F.modoDoc === 'rollo');
+  if (F.modoDoc !== 'rollo') { box.innerHTML = ''; return; }
+  const g = colorGrupos(), tallas = (g[F.dr.color] || []).slice().sort(ordenTalla);
+  const sinStock = esV && !Object.keys(g).length;
+  box.innerHTML = sinStock ? '<div class="nota">No hay productos con stock para vender.</div>' : `<div class="campo"><label>Color del rollo</label>
+    <select onchange="docColor(this.value)"><option value="">— Elegir color —</option>${Object.keys(g).sort().map(k => `<option value="${esc(k)}" ${k === F.dr.color ? 'selected' : ''}>${esc(k)}</option>`).join('')}</select></div>
+    ${tallas.length ? `<div class="campo"><label>Cantidad por talla</label><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(78px,1fr));gap:8px">${tallas.map(p => `<div><label style="margin-bottom:2px">${esc(partesProd(p).talla)}</label><input class="inp" type="number" inputmode="numeric" min="0" value="${F.dr.q[p.id] || ''}" placeholder="0" oninput="docQ('${p.id}',this.value)">${esV ? `<div class="ayuda">stock ${num(stockDisponible(p.id))}</div>` : ''}</div>`).join('')}</div></div>
     <div class="calc"><span>Total del rollo</span><b id="rd-total">0 prendas</b></div>
-    <button class="btn pri ancho" style="margin-bottom:10px" onclick="agregarRolloDoc()">+ Agregar rollo a la lista</button>` : ''}`;
-  box.innerHTML = `
-    <div class="campo"><label>Prenda</label><div class="seg">${prs.map(x => `<button class="${x.id === F.pr ? 'act' : ''}" onclick="docPrenda('${x.id}')">${esc(x.nombre)}</button>`).join('')}</div></div>
-    <div class="campo"><label>Cómo agregar</label><div class="seg"><button class="${F.modoDoc === 'prenda' ? 'act' : ''}" onclick="docModo('prenda')">Una prenda</button><button class="${F.modoDoc === 'rollo' ? 'act' : ''}" onclick="docModo('rollo')">Por rollo (varias tallas)</button></div></div>
-    ${F.modoDoc === 'rollo' ? bloqueRollo : bloqueUna}`;
+    <button class="btn pri ancho" style="margin-bottom:10px" onclick="agregarRolloDoc()">+ Agregar rollo al documento</button>` : ''}`;
   docCalc();
-}
-function sumarLinea(pid, q) { // el precio sale del producto (venta) o del costo (compra) y se puede cambiar en la lista
-  const precio = precioDefecto(porId('productos', pid)), l = F.d.lineas.find(x => x.productoId === pid && +x.precio === precio);
-  if (l) l.cantidad = (+l.cantidad || 0) + (+q); else F.d.lineas.push({ productoId: pid, cantidad: +q, precio, descuento: 0 });
-}
-function agregarUnaDoc() {
-  if (!porId('productos', F.dp.productoId)) return aviso('Elige la prenda exacta (talla y color)');
-  if (!(+F.dp.cantidad > 0)) return aviso('Escribe la cantidad');
-  sumarLinea(F.dp.productoId, +F.dp.cantidad);
-  F.dp = { productoId: '', cantidad: '' }; pintarLineas(); pintarAgregar(); aviso('Agregado ✓');
 }
 function agregarRolloDoc() {
   if (!F.dr.color) return aviso('Elige el color del rollo');
-  const ids = new Set(prodsDoc().filter(p => claveColor(p) === F.dr.color).map(p => p.id));
+  const ids = new Set((colorGrupos()[F.dr.color] || []).map(p => p.id));
   const filas = Object.entries(F.dr.q).filter(([id, q]) => ids.has(id) && +q > 0);
   if (!filas.length) return aviso('Escribe la cantidad de al menos una talla');
-  filas.forEach(([id, q]) => sumarLinea(id, q));
-  const n = filas.length; F.dr = { color: '', q: {} };
-  pintarLineas(); pintarAgregar(); aviso('Rollo agregado (' + n + ' tallas) ✓');
+  F.d.lineas = F.d.lineas.filter(l => l.productoId);
+  filas.forEach(([id, q]) => {
+    const precio = precioDefecto(porId('productos', id)), l = F.d.lineas.find(x => x.productoId === id && +x.precio === precio);
+    if (l) l.cantidad = (+l.cantidad || 0) + (+q); else F.d.lineas.push({ productoId: id, cantidad: +q, precio, descuento: 0 });
+  });
+  const n = filas.length; F.dr = { color: '', precio: '', q: {} };
+  pintarLineas(); pintarRolloDoc(); aviso('Rollo agregado (' + n + ' tallas) ✓');
 }
 function nuevoContactoRapido(col, sel) {
   const n = prompt(col === 'clientes' ? 'Nombre del cliente nuevo:' : 'Nombre del proveedor nuevo:');
@@ -547,10 +560,10 @@ function stockDisponible(pid) { // existencia sin contar el documento que estoy 
 }
 function pintarLineas() {
   const esV = F.col === 'ventas';
-  $('lineas').innerHTML = F.d.lineas.length ? F.d.lineas.map((l, i) => {
+  $('lineas').innerHTML = F.d.lineas.map((l, i) => {
     const p = porId('productos', l.productoId);
     return `<div class="linea">
-      <div style="font-weight:600">${p ? esc(p.nombre) : '(producto borrado)'}</div>
+      <input class="inp" list="dl-prod" placeholder="Escribe código o nombre…" value="${p ? esc(p.codigo + ' · ' + p.nombre) : ''}" onchange="elegirProd(${i},this.value)" id="lp-${i}">
       <div class="fila-in">
         <div><label>Cantidad</label><input class="inp" type="number" inputmode="decimal" min="0" value="${l.cantidad}" oninput="ponLinea(${i},'cantidad',this.value)"></div>
         <div><label>${esV ? 'Precio venta' : 'Costo unitario'} (S/)</label><input class="inp" type="number" inputmode="decimal" step="0.01" min="0" value="${l.precio}" oninput="ponLinea(${i},'precio',this.value)"></div>
@@ -558,7 +571,7 @@ function pintarLineas() {
       </div>
       <div class="info"><span>${p ? 'Stock: ' + num(stockDisponible(p.id)) + ' ' + esc(p.medida || '') : ''}</span><span id="st-${i}">${sol(totalLinea(l))}</span></div>
     </div>`;
-  }).join('') : '<div class="vacio" style="padding:12px">Aún no agregaste prendas.</div>';
+  }).join('');
   $('doc-total').textContent = sol(totalDoc(F.d));
 }
 function ultimoCosto(pid) { // último costo que escribiste en una compra de este producto
@@ -575,13 +588,13 @@ function elegirProd(i, val) {
   setTimeout(pintarLineas, 0);
 }
 function ponLinea(i, k, v) { F.d.lineas[i][k] = +v || 0; $('st-' + i).textContent = sol(totalLinea(F.d.lineas[i])); $('doc-total').textContent = sol(totalDoc(F.d)); }
-function quitarLinea(i) { F.d.lineas.splice(i, 1); pintarLineas(); pintarAgregar(); }
+function agregarLinea() { F.d.lineas.push({ productoId: '', cantidad: 1, precio: 0, descuento: 0 }); pintarLineas(); const el = $('lp-' + (F.d.lineas.length - 1)); el && el.focus(); }
+function quitarLinea(i) { F.d.lineas.splice(i, 1); if (!F.d.lineas.length) F.d.lineas.push({ productoId: '', cantidad: 1, precio: 0, descuento: 0 }); pintarLineas(); }
 function guardarDoc() {
-  if (F.modoDoc === 'rollo' && Object.values(F.dr.q).some(q => +q > 0)) agregarRolloDoc(); // escrito pero sin agregar
-  else if (F.modoDoc === 'prenda' && F.dp.productoId && +F.dp.cantidad > 0) agregarUnaDoc();
+  if (F.modoDoc === 'rollo' && Object.values(F.dr.q).some(q => +q > 0)) agregarRolloDoc(); // rollo escrito pero sin agregar
   const d = F.d; d.lineas = d.lineas.filter(l => l.productoId && +l.cantidad > 0);
   if (!d.fecha) return aviso('Falta la fecha');
-  if (!d.lineas.length) { pintarLineas(); return aviso('Agrega al menos una prenda con cantidad'); }
+  if (!d.lineas.length) { d.lineas.push({ productoId: '', cantidad: 1, precio: 0 }); pintarLineas(); return aviso('Agrega al menos un producto con cantidad'); }
   if (F.col === 'ventas') {
     const falta = d.lineas.filter(l => +l.cantidad > stockDisponible(l.productoId));
     if (falta.length && !confirm('Estás vendiendo más de lo que hay en stock en: ' + falta.map(l => porId('productos', l.productoId).nombre).join(', ') + '.\n¿Guardar de todas formas?')) return;
@@ -788,47 +801,16 @@ function vPersona(pid) {
   const regs = S.registros.filter(r => r.personaId === pid && enRango(r.fecha, s.inicio, s.fin)).sort((a, b) => a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : (a.creado || 0) - (b.creado || 0));
   const total = regs.reduce((t, r) => t + pagoReg(r), 0);
   const porMaq = m => regs.filter(r => r.maquina === m).reduce((t, r) => t + pagoReg(r), 0);
-  const gr = gruposDe(regs); UI.grp = {}; gr.forEach(g => UI.grp[g.key] = g.rs.map(r => r.id));
-  return `<div class="cifras">${cifra('A pagar a ' + esc(per.nombre), sol(total))}${cifra('Prendas', num(prendasReales(regs)))}</div>
+  return `<div class="cifras">${cifra('A pagar a ' + esc(per.nombre), sol(total))}${cifra('Prendas', num(regs.reduce((t, r) => t + +r.cantidad, 0)))}</div>
     <p class="ayuda" style="margin:-2px 2px 10px">Recta ${sol(porMaq('recta'))} · Remalle ${sol(porMaq('remalle'))} · Completa ${sol(porMaq('completa'))}</p>
-    <div class="lista">${gr.map(lineaGrupo).join('') || '<div class="vacio">Sin registros en esta semana.<br>Toca “+ Registro” para anotar.</div>'}</div>`;
-}
-// Una prenda real = un trabajo y lo que "falta" de ese trabajo (recta + remalle de la misma prenda cuentan una sola vez)
-const grupoReg = r => (r.origenId && porId('registros', r.origenId)) ? r.origenId : r.id;
-function prendasReales(regs) {
-  const m = {}; regs.forEach(r => { const k = grupoReg(r); m[k] = Math.max(m[k] || 0, +r.cantidad || 0); });
-  return Object.values(m).reduce((t, x) => t + x, 0);
-}
-function gruposDe(regs) {
-  const m = new Map(); regs.forEach(r => { const k = grupoReg(r); if (!m.has(k)) m.set(k, []); m.get(k).push(r); });
-  return [...m].map(([key, rs]) => ({ key, rs }));
-}
-const minus1 = t => t.charAt(0).toLowerCase() + t.slice(1);
-function lineaGrupo(g) {
-  const rs = g.rs.slice().sort((a, b) => (a.creado || 0) - (b.creado || 0));
-  if (rs.length === 1) return lineaRegistro(rs[0]);
-  const b = rs[0], p = porId('prendas', b.prendaId), prod = porId('productos', b.productoId);
-  const maqs = ['recta', 'remalle', 'completa'].filter(m => rs.some(r => r.maquina === m));
-  const o = b.origenId ? porId('registros', b.origenId) : null;
-  const marca = o ? ` <span class="chip gris">falta de ${esc(porId('personas', o.personaId)?.nombre || '…')}</span>${o.sinEtiqueta ? ' <span class="chip gris">sin etiqueta</span>' : ''}` : '';
-  const pago = rs.reduce((t, r) => t + pagoReg(r), 0), unit = rs.reduce((t, r) => t + pagoUnit(r), 0);
-  const detalle = rs.map(r => `<b>${MAQ[r.maquina]}</b> ${esc(minus1(textoOps(r)))}`).join(' · ');
-  return `<div class="fila" onclick="abrirGrupo('${g.key}')"><div class="cuerpo reg-linea"><b>${fCorta(b.fecha)}</b> · ${esc(prod?.nombre || p?.nombre || '?')} ×${num(Math.max(...rs.map(r => +r.cantidad || 0)))} <span class="chip comp">${maqs.map(m => MAQ[m]).join(' + ')}</span> · <span style="color:var(--suave)">${detalle}</span>${marca}</div>
-    <div class="der"><span class="monto">${sol(pago)}</span><small>${sol(unit)} c/u</small></div></div>`;
-}
-function abrirGrupo(key) {
-  const rs = ((UI.grp || {})[key] || []).map(id => porId('registros', id)).filter(Boolean);
-  abrirModal('Detalle de la prenda', `<p class="ayuda" style="margin:0 2px 8px">Toca una parte para editarla o borrarla.</p><div class="lista">${rs.map(lineaRegistro).join('')}</div>`, '');
+    <div class="lista">${regs.map(lineaRegistro).join('') || '<div class="vacio">Sin registros en esta semana.<br>Toca “+ Registro” para anotar.</div>'}</div>`;
 }
 function lineaRegistro(r) {
   const p = porId('prendas', r.prendaId), prod = porId('productos', r.productoId);
   const chip = r.maquina === 'recta' ? 'chip' : r.maquina === 'remalle' ? 'chip rem' : 'chip comp';
   let marca = '';
-  if (r.origenId) { const o = porId('registros', r.origenId); marca = ` <span class="chip gris">falta de ${esc(porId('personas', o?.personaId)?.nombre || '…')}</span>${o?.sinEtiqueta ? ' <span class="chip gris">sin etiqueta</span>' : ''}`; }
-  else if (r.completar && S.registros.some(x => x.origenId === r.id)) {
-    const hs = S.registros.filter(x => x.origenId === r.id), ms = ['recta', 'remalle', 'completa'].filter(m => hs.some(x => x.maquina === m));
-    marca = ` <span class="chip gris">resto a ${esc(porId('personas', idCompleta())?.nombre || 'YO')}${ms.length ? ' · ' + ms.map(m => MAQ[m]).join(' + ') : ''}</span>${r.sinEtiqueta ? ' <span class="chip gris">sin etiqueta</span>' : ''}`;
-  } else if (r.sinEtiqueta) marca = ' <span class="chip gris">sin etiqueta</span>';
+  if (r.origenId) { const o = porId('registros', r.origenId); marca = ` <span class="chip gris">falta de ${esc(porId('personas', o?.personaId)?.nombre || '…')}</span>`; }
+  else if (r.completar && S.registros.some(x => x.origenId === r.id)) marca = ` <span class="chip gris">resto a ${esc(porId('personas', idCompleta())?.nombre || 'YO')}</span>`;
   return `<div class="fila" onclick="formRegistro('${r.id}')"><div class="cuerpo reg-linea"><b>${fCorta(r.fecha)}</b> · ${esc(prod?.nombre || p?.nombre || '?')} ×${num(r.cantidad)} <span class="${chip}">${MAQ[r.maquina]}</span> · <span style="color:var(--suave)">${esc(textoOps(r))}</span>${marca}</div>
     <div class="der"><span class="monto">${sol(pagoReg(r))}</span><small>${sol(pagoUnit(r))} c/u</small></div></div>`;
 }
@@ -937,7 +919,7 @@ function guardarRollo() {
   });
   cerrarModal(); aviso('Rollo guardado ✓ (' + filas.length + ' registros)');
 }
-function etqOp() { return etqOpPrenda(porId('prendas', F.d.prendaId)); }
+function etqOp() { const p = porId('prendas', F.d.prendaId); return p && /baggy/i.test(p.nombre) ? p.ops.find(o => /etiqueta/i.test(o.nombre)) : null; }
 function regResetEtq() { if (F.d.sinEtiqueta) { F.d.sinEtiqueta = false; F.d.tipo = 'todo'; F.d.ops = []; } }
 function aplicarEtq(on) {
   const e = etqOp(); if (!e) return;
@@ -967,10 +949,9 @@ function regCalc() {
   const el = $('reg-resto'); if (!el) return;
   if (!F.completar) { el.textContent = 'No se anotará nada más.'; return; }
   const partes = F.d.prendaId ? partesFaltantes(F.d) : [], nom = porId('personas', idCompleta())?.nombre || '';
-  const nota = F.d.sinEtiqueta ? ' (la etiqueta no se anota a nadie: la prenda va sin etiqueta)' : '';
-  if (!partes.length) { el.textContent = 'Hizo toda la prenda: no falta nada para ' + nom + '.' + nota; return; }
+  if (!partes.length) { el.textContent = 'Hizo toda la prenda: no falta nada para ' + nom + '.'; return; }
   const tot = partes.reduce((s, x) => s + pagoUnit(x) * (+F.d.cantidad || 0), 0);
-  el.innerHTML = 'A ' + esc(nom) + ' se le anotará: ' + partes.map(x => '<b>' + MAQ[x.maquina] + '</b> ' + esc(x.tipo === 'todo' ? 'todo completo' : textoOps(x).replace('Solo: ', ''))).join(' + ') + ' · <b>' + sol(tot) + '</b>' + nota;
+  el.innerHTML = 'A ' + esc(nom) + ' se le anotará: ' + partes.map(x => '<b>' + MAQ[x.maquina] + '</b> ' + esc(x.tipo === 'todo' ? 'todo completo' : textoOps(x).replace('Solo: ', ''))).join(' + ') + ' · <b>' + sol(tot) + '</b>';
 }
 function guardarRegistro() {
   if (F.rollo && F.nuevo) return guardarRollo();
