@@ -803,7 +803,35 @@ function vPersona(pid) {
   const porMaq = m => regs.filter(r => r.maquina === m).reduce((t, r) => t + pagoReg(r), 0);
   return `<div class="cifras">${cifra('A pagar a ' + esc(per.nombre), sol(total))}${cifra('Prendas', num(regs.reduce((t, r) => t + +r.cantidad, 0)))}</div>
     <p class="ayuda" style="margin:-2px 2px 10px">Recta ${sol(porMaq('recta'))} · Remalle ${sol(porMaq('remalle'))} · Completa ${sol(porMaq('completa'))}</p>
-    <div class="lista">${regs.map(lineaRegistro).join('') || '<div class="vacio">Sin registros en esta semana.<br>Toca “+ Registro” para anotar.</div>'}</div>`;
+    <div class="lista">${agruparRollos(regs).map(lineaGrupo).join('') || '<div class="vacio">Sin registros en esta semana.<br>Toca “+ Registro” para anotar.</div>'}</div>`;
+}
+// Junta en una sola tarjeta los registros de un mismo rollo (misma fecha, prenda, color, máquina y operaciones)
+function agruparRollos(regs) {
+  const grupos = [], idx = {};
+  regs.forEach(r => {
+    const prod = porId('productos', r.productoId);
+    const k = prod ? [r.fecha, r.prendaId, claveColor(prod), r.maquina, r.tipo, (r.ops || []).slice().sort().join(','), r.origenId ? 'h' : '', r.completar ? 'c' : ''].join('|') : 'solo|' + r.id;
+    if (idx[k] === undefined) { idx[k] = grupos.length; grupos.push([]); }
+    grupos[idx[k]].push(r);
+  });
+  return grupos;
+}
+function lineaGrupo(g) {
+  if (g.length === 1) return lineaRegistro(g[0]);
+  const r = g[0], prod = porId('productos', r.productoId);
+  const chip = r.maquina === 'recta' ? 'chip' : r.maquina === 'remalle' ? 'chip rem' : 'chip comp';
+  let marca = '';
+  if (r.origenId) { const o = porId('registros', r.origenId); marca = ` <span class="chip gris">falta de ${esc(porId('personas', o?.personaId)?.nombre || '…')}</span>`; }
+  else if (r.completar && S.registros.some(x => x.origenId === r.id)) marca = ` <span class="chip gris">resto a ${esc(porId('personas', idCompleta())?.nombre || 'YO')}</span>`;
+  const cant = g.reduce((t, x) => t + (+x.cantidad || 0), 0), pago = g.reduce((t, x) => t + pagoReg(x), 0);
+  const tallas = g.slice().sort((a, b) => { const pa = porId('productos', a.productoId), pb = porId('productos', b.productoId); return pa && pb ? ordenTalla(pa, pb) : 0; });
+  return `<div class="fila" style="flex-direction:column;align-items:stretch;cursor:default;gap:0">
+    <div style="display:flex;gap:10px;align-items:center">
+      <div class="cuerpo reg-linea"><b>${fCorta(r.fecha)}</b> · ${esc(claveColor(prod))} ×${num(cant)} <span class="${chip}">${MAQ[r.maquina]}</span> · <span style="color:var(--suave)">${esc(textoOps(r))}</span>${marca}</div>
+      <div class="der"><span class="monto">${sol(pago)}</span><small>${sol(pagoUnit(r))} c/u</small></div>
+    </div>
+    <div class="tallas">${tallas.map(x => `<button class="chip-talla" onclick="formRegistro('${x.id}')">${esc(partesProd(porId('productos', x.productoId)).talla)} ×${num(x.cantidad)}</button>`).join('')}<span class="ayuda" style="align-self:center">Toca una talla para editarla</span></div>
+  </div>`;
 }
 function lineaRegistro(r) {
   const p = porId('prendas', r.prendaId), prod = porId('productos', r.productoId);
