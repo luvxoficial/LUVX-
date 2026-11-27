@@ -303,7 +303,7 @@ const GRUPOS = {
 function grupoDe(v) {
   if (v === 'inicio') return 'inicio';
   if (GRUPOS.negocio.some(x => x[0] === v)) return 'negocio';
-  if (v.startsWith('t:') || ['tresumen', 'remalle', 'prendas', 'personas'].includes(v)) return 'taller';
+  if (v.startsWith('t:') || ['tresumen', 'remalle', 'control', 'prendas', 'personas'].includes(v)) return 'taller';
   return 'mas';
 }
 function ir(v) { UI.vista = v; if (v !== 'productos') UI.buscar = ''; render(); window.scrollTo(0, 0); }
@@ -325,7 +325,7 @@ function render() {
   const s = SEM(), esActual = enRango(hoy(), s.inicio, s.fin);
   let sub = '';
   if (g === 'negocio') sub = subtabs(GRUPOS.negocio);
-  if (g === 'taller') sub = subtabs([...personasActivas().map(p => ['t:' + p.id, p.nombre]), ['tresumen', 'Resumen semana'], ['remalle', 'Remalle pendiente'], ['prendas', 'Prendas y precios'], ['personas', 'Personas']]);
+  if (g === 'taller') sub = subtabs([...personasActivas().map(p => ['t:' + p.id, p.nombre]), ['tresumen', 'Resumen semana'], ['control', 'Control por prenda'], ['prendas', 'Prendas y precios'], ['personas', 'Personas']]);
   const titulos = { inicio: 'Resumen', negocio: 'Negocio', taller: 'Taller', mas: 'Más' };
   $('app').innerHTML = `
     <div class="barra"><div class="barra-fila">
@@ -378,7 +378,7 @@ function vista() {
   if (v === 'reportes') return vReportes();
   if (v.startsWith('t:')) return vPersona(v.slice(2));
   if (v === 'tresumen') return vTallerResumen();
-  if (v === 'remalle') return vRemalle();
+  if (v === 'remalle' || v === 'control') return vControl();
   if (v === 'prendas') return vPrendas();
   if (v === 'personas') return vPersonas();
   if (v === 'clientes' || v === 'proveedores') return vContactos(v);
@@ -394,7 +394,7 @@ function vInicio() {
   const compras = comprasEntre(s.inicio, s.fin).reduce((t, c) => t + totalDoc(c), 0);
   const regs = S.registros.filter(r => enRango(r.fecha, s.inicio, s.fin));
   const pagar = regs.reduce((t, r) => t + pagoReg(r), 0);
-  const rp = remallePendiente(s.fin).reduce((t, x) => t + x.pago, 0);
+  const falt = controlDatos().faltan;
   const valorInv = S.productos.reduce((t, p) => t + stockA(p.id, s.fin).v, 0);
   return `
     <h2>Semana del ${fLarga(s.inicio)} al ${fLarga(s.fin)}</h2>
@@ -409,7 +409,7 @@ function vInicio() {
     <div class="cifras">
       ${cifra('A pagar esta semana', sol(pagar), '', "ir('tresumen')")}
       ${cifra('Prendas registradas', num(prendasReales(regs)), '', "ir('tresumen')")}
-      ${cifra('Remalle pendiente', sol(rp), '', "ir('remalle')")}
+      ${cifra('Faltan por trabajar', num(falt), '', "ir('control')")}
       ${cifra('Registros', regs.length, '', "ir('tresumen')")}
     </div>
     <div class="acciones">
@@ -1203,7 +1203,62 @@ function vTallerResumen() {
     <div class="lista tabla-caja"><table class="tabla"><tr><th>Prenda</th><th>Prendas</th><th>Con recta</th><th>Con remalle</th><th>Terminadas</th></tr>
     ${prendas.map(x => `<tr><td>${esc(x.p.nombre)}</td><td><b>${num(x.real)}</b></td><td>${num(x.rec)}</td><td>${num(x.rem)}</td><td>${num(x.fin)}</td></tr>`).join('') || '<tr><td colspan="5" class="vacio">Sin registros</td></tr>'}
     <tr class="total"><td>Total</td><td>${num(prendas.reduce((t, x) => t + x.real, 0))}</td><td>${num(prendas.reduce((t, x) => t + x.rec, 0))}</td><td>${num(prendas.reduce((t, x) => t + x.rem, 0))}</td><td>${num(prendas.reduce((t, x) => t + x.fin, 0))}</td></tr></table></div>
-    <p class="ayuda">“Prendas” cuenta cada prenda una sola vez. “Terminadas” son las que ya tienen recta y remalle; las demás están en proceso (mira Remalle pendiente).</p>`;
+    <p class="ayuda">“Prendas” cuenta cada prenda una sola vez. “Terminadas” son las que ya tienen recta y remalle; las demás están en proceso (mira Control por prenda).</p>`;
+}
+// ---------- Control por prenda: compradas, trabajadas, faltan y ganancia ----------
+const ORDEN_PRENDAS = ['baggy', 'polera', 'casaca'], PLURAL_PRENDA = { baggy: 'BAGGYS', polera: 'POLERAS', casaca: 'CASACAS' };
+const prendaDeProducto = p => S.prendas.find(pr => (p.categoria || '').toLowerCase().startsWith(pr.nombre.trim().toLowerCase()))?.nombre.trim() || 'Otros';
+const costoProd = p => +p.costo || ultimoCosto(p.id) || stockHoy(p.id).prom || 0;
+function controlDatos() {
+  const s = SEM(), regs = S.registros.filter(r => enRango(r.fecha, s.inicio, s.fin));
+  const comp = comprasSemana(s.inicio), un = unidadesProd(regs, true), trab = {};
+  Object.keys(un).forEach(k => trab[k] = Math.max(un[k].rec, un[k].rem));
+  const ids = new Set([...Object.keys(comp), ...Object.keys(trab)].filter(id => porId('productos', id)));
+  const prendas = {}, modelos = {};
+  ids.forEach(id => {
+    const p = porId('productos', id), c = comp[id] || 0, t = trab[id] || 0;
+    if (!c && !t) return;
+    const pn = prendaDeProducto(p), g = prendas[pn] || (prendas[pn] = { nombre: pn, filas: {}, c: 0, t: 0 });
+    const k = claveColor(p), f = g.filas[k] || (g.filas[k] = { k, c: 0, t: 0 });
+    f.c += c; f.t += t; g.c += c; g.t += t;
+    const mk = etiquetaModelo(p), m = modelos[mk] || (modelos[mk] = { k: mk, prods: [], t: 0 });
+    m.prods.push(p); m.t += t;
+  });
+  // registros antiguos sin talla ni color: se cuentan aparte por prenda
+  Object.keys(trab).filter(k => !porId('productos', k)).forEach(k => {
+    const pr = porId('prendas', k.replace(/^p:/, '')) || porId('prendas', k); if (!pr) return;
+    const g = prendas[pr.nombre.trim()] || (prendas[pr.nombre.trim()] = { nombre: pr.nombre.trim(), filas: {}, c: 0, t: 0 });
+    const f = g.filas['(registros sin talla ni color)'] || (g.filas['(registros sin talla ni color)'] = { k: '(registros sin talla ni color)', c: 0, t: 0 });
+    f.t += trab[k]; g.t += trab[k];
+  });
+  // mano de obra pagada por prenda (promedio) para comparar con el costo de compra
+  const pago = {};
+  regs.forEach(r => { const p = porId('productos', r.productoId); if (p) pago[etiquetaModelo(p)] = (pago[etiquetaModelo(p)] || 0) + pagoReg(r); });
+  const lista = Object.values(modelos).map(m => {
+    const venta = r2(m.prods.reduce((t, p) => t + (+p.precio || 0), 0) / m.prods.length), cs = m.prods.map(costoProd).filter(x => x > 0), compra = cs.length ? r2(cs.reduce((t, x) => t + x, 0) / cs.length) : 0;
+    const mo = m.t ? r2((pago[m.k] || 0) / m.t) : null;
+    return { k: m.k, venta, compra, gan: r2(venta - compra), mo, dif: mo === null ? null : r2(mo - compra), t: m.t };
+  }).sort((a, b) => a.k.localeCompare(b.k));
+  const grupos = Object.values(prendas).sort((a, b) => { const i = ORDEN_PRENDAS.indexOf(a.nombre.toLowerCase()), j = ORDEN_PRENDAS.indexOf(b.nombre.toLowerCase()); return (i < 0 ? 99 : i) - (j < 0 ? 99 : j) || a.nombre.localeCompare(b.nombre); });
+  const tot = k => grupos.reduce((t, g) => t + g[k], 0);
+  return { s, grupos, lista, comprad: tot('c'), trabaj: tot('t'), faltan: grupos.reduce((t, g) => t + Object.values(g.filas).reduce((x, f) => x + Math.max(0, f.c - f.t), 0), 0), gananciaEst: lista.reduce((t, m) => t + m.gan * m.t, 0) };
+}
+function vControl() {
+  const d = controlDatos();
+  if (!d.grupos.length) return '<div class="vacio">No hay compras ni trabajos en esta semana.</div>';
+  const tabla = d.grupos.map(g => {
+    const filas = Object.values(g.filas).sort((a, b) => a.k.localeCompare(b.k)), falt = filas.reduce((t, f) => t + Math.max(0, f.c - f.t), 0);
+    return `<div class="seccion-cab"><h2>${esc(PLURAL_PRENDA[g.nombre.toLowerCase()] || g.nombre.toUpperCase())}</h2><span class="ayuda">compradas ${num(g.c)} · trabajadas ${num(g.t)} · faltan ${num(falt)}</span></div>
+      <div class="lista tabla-caja"><table class="tabla"><tr><th>Prenda y color</th><th>Compradas</th><th>Trabajadas</th><th>Faltan</th></tr>
+      ${filas.map(f => { const x = f.c - f.t; return `<tr><td>${esc(f.k)}</td><td>${num(f.c)}</td><td>${num(f.t)}</td><td class="${x > 0 ? '' : x < 0 ? 'neg' : 'pos'}"><b>${x > 0 ? num(x) : x < 0 ? '+' + num(-x) : '✓'}</b></td></tr>`; }).join('')}
+      <tr class="total"><td>Total</td><td>${num(g.c)}</td><td>${num(g.t)}</td><td>${num(falt)}</td></tr></table></div>`;
+  }).join('');
+  const ganancias = d.lista.length ? `<div class="seccion-cab"><h2>GANANCIA POR PRENDA</h2></div>
+    <div class="lista tabla-caja"><table class="tabla"><tr><th>Prenda</th><th>Venta</th><th>Compra</th><th>Ganancia</th><th>Mano de obra</th><th>Dif.</th></tr>
+    ${d.lista.map(m => `<tr><td>${esc(m.k)}</td><td>${sol(m.venta)}</td><td>${sol(m.compra)}</td><td class="${m.gan >= 0 ? 'pos' : 'neg'}"><b>${sol(m.gan)}</b></td><td>${m.mo === null ? '—' : sol(m.mo)}</td><td class="${m.dif === null ? '' : Math.abs(m.dif) < 0.05 ? 'pos' : 'neg'}">${m.dif === null ? '—' : (m.dif > 0 ? '+' : '') + sol(m.dif)}</td></tr>`).join('')}</table></div>
+    <p class="ayuda">Ganancia = precio de venta − costo de compra (el costo de compra ya incluye la mano de obra). “Mano de obra” es lo que se pagó en el taller por prenda esta semana. “Dif.” = mano de obra − costo de compra: si sale distinto de cero, revisa que el costo de compra y los precios del taller coincidan. Si aún falta registrar el remalle, la mano de obra sale menor.</p>` : '';
+  return `<div class="cifras">${cifra('Compradas', num(d.comprad))}${cifra('Trabajadas', num(d.trabaj))}${cifra('Faltan por trabajar', num(d.faltan))}${cifra('Ganancia de lo trabajado', sol(d.gananciaEst), d.gananciaEst >= 0 ? 'pos' : 'neg')}</div>
+    ${tabla}${ganancias}`;
 }
 function vRemalle() {
   const s = SEM(), rp = remallePendiente(s.fin);
