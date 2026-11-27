@@ -408,7 +408,7 @@ function vInicio() {
     <h3>Taller</h3>
     <div class="cifras">
       ${cifra('A pagar esta semana', sol(pagar), '', "ir('tresumen')")}
-      ${cifra('Prendas registradas', num(regs.reduce((t, r) => t + +r.cantidad, 0)), '', "ir('tresumen')")}
+      ${cifra('Prendas registradas', num(prendasReales(regs)), '', "ir('tresumen')")}
       ${cifra('Remalle pendiente', sol(rp), '', "ir('remalle')")}
       ${cifra('Registros', regs.length, '', "ir('tresumen')")}
     </div>
@@ -801,36 +801,54 @@ function vPersona(pid) {
   const regs = S.registros.filter(r => r.personaId === pid && enRango(r.fecha, s.inicio, s.fin)).sort((a, b) => a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : (a.creado || 0) - (b.creado || 0));
   const total = regs.reduce((t, r) => t + pagoReg(r), 0);
   const porMaq = m => regs.filter(r => r.maquina === m).reduce((t, r) => t + pagoReg(r), 0);
-  return `<div class="cifras">${cifra('A pagar a ' + esc(per.nombre), sol(total))}${cifra('Prendas', num(regs.reduce((t, r) => t + +r.cantidad, 0)))}</div>
+  return `<div class="cifras">${cifra('A pagar a ' + esc(per.nombre), sol(total))}${cifra('Prendas', num(prendasReales(regs)))}</div>
     <p class="ayuda" style="margin:-2px 2px 10px">Recta ${sol(porMaq('recta'))} · Remalle ${sol(porMaq('remalle'))} · Completa ${sol(porMaq('completa'))}</p>
     <div class="lista">${agruparRollos(regs).map(lineaGrupo).join('') || '<div class="vacio">Sin registros en esta semana.<br>Toca “+ Registro” para anotar.</div>'}</div>`;
 }
-// Junta en una sola tarjeta los registros de un mismo rollo (misma fecha, prenda, color, máquina y operaciones)
+// Junta en una sola tarjeta todo lo que una persona hizo de la misma prenda y color en un día (recta, remalle, operaciones...)
 function agruparRollos(regs) {
   const grupos = [], idx = {};
   regs.forEach(r => {
     const prod = porId('productos', r.productoId);
-    const k = prod ? [r.fecha, r.prendaId, claveColor(prod), r.maquina, r.tipo, (r.ops || []).slice().sort().join(','), r.origenId ? 'h' : '', r.completar ? 'c' : ''].join('|') : 'solo|' + r.id;
+    const k = prod ? [r.fecha, r.prendaId, claveColor(prod)].join('|') : 'solo|' + r.id;
     if (idx[k] === undefined) { idx[k] = grupos.length; grupos.push([]); }
     grupos[idx[k]].push(r);
   });
   return grupos;
 }
+function marcaReg(r) {
+  if (r.origenId) { const o = porId('registros', r.origenId); return ` <span class="chip gris">falta de ${esc(porId('personas', o?.personaId)?.nombre || '…')}</span>`; }
+  if (r.completar && S.registros.some(x => x.origenId === r.id)) return ` <span class="chip gris">resto a ${esc(porId('personas', idCompleta())?.nombre || 'YO')}</span>`;
+  return '';
+}
+const chipMaq = m => m === 'recta' ? 'chip' : m === 'remalle' ? 'chip rem' : 'chip comp';
+function chipsTallas(g) {
+  const t = g.slice().sort((a, b) => { const pa = porId('productos', a.productoId), pb = porId('productos', b.productoId); return pa && pb ? ordenTalla(pa, pb) : 0; });
+  return `<div class="tallas">${t.map(x => `<button class="chip-talla" onclick="formRegistro('${x.id}')">${esc(partesProd(porId('productos', x.productoId)).talla)} ×${num(x.cantidad)}</button>`).join('')}<span class="ayuda" style="align-self:center">Toca una talla para editarla</span></div>`;
+}
 function lineaGrupo(g) {
   if (g.length === 1) return lineaRegistro(g[0]);
-  const r = g[0], prod = porId('productos', r.productoId);
-  const chip = r.maquina === 'recta' ? 'chip' : r.maquina === 'remalle' ? 'chip rem' : 'chip comp';
-  let marca = '';
-  if (r.origenId) { const o = porId('registros', r.origenId); marca = ` <span class="chip gris">falta de ${esc(porId('personas', o?.personaId)?.nombre || '…')}</span>`; }
-  else if (r.completar && S.registros.some(x => x.origenId === r.id)) marca = ` <span class="chip gris">resto a ${esc(porId('personas', idCompleta())?.nombre || 'YO')}</span>`;
-  const cant = g.reduce((t, x) => t + (+x.cantidad || 0), 0), pago = g.reduce((t, x) => t + pagoReg(x), 0);
-  const tallas = g.slice().sort((a, b) => { const pa = porId('productos', a.productoId), pb = porId('productos', b.productoId); return pa && pb ? ordenTalla(pa, pb) : 0; });
+  const prod = porId('productos', g[0].productoId);
+  // partes: mismo trabajo (máquina, tipo y operaciones) = un bloque con sus tallas
+  const partes = [], idx = {};
+  g.forEach(r => {
+    const k = [r.maquina, r.tipo, (r.ops || []).slice().sort().join(','), r.origenId ? 'h' : '', r.completar ? 'c' : ''].join('|');
+    if (idx[k] === undefined) { idx[k] = partes.length; partes.push([]); }
+    partes[idx[k]].push(r);
+  });
+  const real = prendasReales(g), pago = g.reduce((t, x) => t + pagoReg(x), 0);
+  const maqs = [...new Set(g.map(x => x.maquina))].map(m => MAQ[m]).join(' + ');
+  const cab = `<b>${fCorta(g[0].fecha)}</b> · ${esc(claveColor(prod))} ×${num(real)}`;
+  if (partes.length === 1) { // un solo trabajo, varias tallas (rollo)
+    const r = g[0];
+    return `<div class="fila" style="flex-direction:column;align-items:stretch;cursor:default;gap:0">
+      <div style="display:flex;gap:10px;align-items:center"><div class="cuerpo reg-linea">${cab} <span class="${chipMaq(r.maquina)}">${MAQ[r.maquina]}</span> · <span style="color:var(--suave)">${esc(textoOps(r))}</span>${marcaReg(r)}</div>
+      <div class="der"><span class="monto">${sol(pago)}</span><small>${sol(pagoUnit(r))} c/u</small></div></div>${chipsTallas(g)}</div>`;
+  }
   return `<div class="fila" style="flex-direction:column;align-items:stretch;cursor:default;gap:0">
-    <div style="display:flex;gap:10px;align-items:center">
-      <div class="cuerpo reg-linea"><b>${fCorta(r.fecha)}</b> · ${esc(claveColor(prod))} ×${num(cant)} <span class="${chip}">${MAQ[r.maquina]}</span> · <span style="color:var(--suave)">${esc(textoOps(r))}</span>${marca}</div>
-      <div class="der"><span class="monto">${sol(pago)}</span><small>${sol(pagoUnit(r))} c/u</small></div>
-    </div>
-    <div class="tallas">${tallas.map(x => `<button class="chip-talla" onclick="formRegistro('${x.id}')">${esc(partesProd(porId('productos', x.productoId)).talla)} ×${num(x.cantidad)}</button>`).join('')}<span class="ayuda" style="align-self:center">Toca una talla para editarla</span></div>
+    <div style="display:flex;gap:10px;align-items:center"><div class="cuerpo reg-linea">${cab} <span class="chip comp">${maqs}</span></div>
+    <div class="der"><span class="monto">${sol(pago)}</span><small>${real ? sol(pago / real) : sol(0)} c/u</small></div></div>
+    ${partes.map(p => { const r = p[0], pp = p.reduce((t, x) => t + pagoReg(x), 0); return `<div class="parte"><div style="display:flex;gap:10px;align-items:center"><div class="cuerpo reg-linea"><span class="${chipMaq(r.maquina)}">${MAQ[r.maquina]}</span> · <span style="color:var(--suave)">${esc(textoOps(r))}</span>${marcaReg(r)}</div><b>${sol(pp)}</b></div>${chipsTallas(p)}</div>`; }).join('')}
   </div>`;
 }
 function lineaRegistro(r) {
@@ -860,12 +878,13 @@ function pintarRegistro() {
   const nombres = (r.ops || []).map(id => prenda?.ops.find(o => o.id === id)?.nombre).filter(Boolean);
   const grupos = r.maquina === 'completa' ? [['recta', 'Recta'], ['remalle', 'Remalle']] : [[r.maquina, '']];
   const otrasPersonas = S.personas.filter(p => p.activo !== false || p.id === r.personaId);
-  const prods = productosDePrenda(prenda, r.fecha, r.productoId), porCat = {}, cSem = comprasSemana(r.fecha);
+  const disp = dispMapa(r.fecha, r.maquina), prods = productosDePrenda(prenda, r.fecha, r.productoId, disp), porCat = {}, cSem = disp;
+  const sinDisp = !prods.length && productosDePrenda(prenda, r.fecha, '').length > 0, semTxt = textoSemana(semanaDe(r.fecha));
   prods.forEach(p => (porCat[p.categoria] = porCat[p.categoria] || []).push(p));
-  const opcionesProd = Object.entries(porCat).map(([c, ps]) => `<optgroup label="${esc(c)}">${ps.map(p => `<option value="${p.id}" ${p.id === r.productoId ? 'selected' : ''}>${esc(p.nombre)} · compradas ${num(cSem[p.id] || 0)}</option>`).join('')}</optgroup>`).join('');
+  const opcionesProd = Object.entries(porCat).map(([c, ps]) => `<optgroup label="${esc(c)}">${ps.map(p => `<option value="${p.id}" ${p.id === r.productoId ? 'selected' : ''}>${esc(p.nombre)} · disponibles ${num(cSem[p.id] || 0)}</option>`).join('')}</optgroup>`).join('');
   const bloqueProd = `<div class="campo"><label>Prenda exacta (talla y color)</label>
       <select onchange="F.d.productoId=this.value"><option value="">— Elegir —</option>${opcionesProd}</select>
-      <div class="ayuda">${prods.length ? 'Solo prendas compradas en la semana ' + textoSemana(semanaDe(r.fecha)) + '.' : 'No hay compras de esta prenda en la semana ' + textoSemana(semanaDe(r.fecha)) + '. Registra primero la compra.'}</div></div>`;
+      <div class="ayuda">${prods.length ? 'Compradas en la semana ' + semTxt + ' y aún sin registrar.' : sinDisp ? 'Ya registraste todo lo comprado de esta prenda en la semana ' + semTxt + '.' : 'No hay compras de esta prenda en la semana ' + semTxt + '. Registra primero la compra.'}</div></div>`;
   const etq = etqOp(), nomCompleta = porId('personas', idCompleta())?.nombre || '';
   const bloqueEtq = etq && r.maquina === 'recta' ? `<label class="check" style="background:var(--aviso2);border-radius:10px;margin-bottom:12px"><input type="checkbox" ${r.sinEtiqueta ? 'checked' : ''} onchange="regSinEtq(this.checked)"><span>Sin etiqueta (no se pegó etiqueta)</span></label>` : '';
   const bloqueModo = F.nuevo ? `<div class="campo"><label>Cómo registrar</label><div class="seg"><button class="${!F.rollo ? 'act' : ''}" onclick="regModo(false)">Una prenda</button><button class="${F.rollo ? 'act' : ''}" onclick="regModo(true)">Por rollo (varias tallas)</button></div></div>` : '';
@@ -875,11 +894,11 @@ function pintarRegistro() {
     const tallas = (colores[F.rcolor] || []).slice().sort(ordenTalla);
     bloqueRollo = `<div class="campo"><label>Color del rollo</label>
       <select onchange="regColor(this.value)"><option value="">— Elegir color —</option>${Object.keys(colores).sort().map(k => `<option value="${esc(k)}" ${k === F.rcolor ? 'selected' : ''}>${esc(k)}</option>`).join('')}</select>
-      <div class="ayuda">${prods.length ? 'Colores comprados en la semana ' + textoSemana(semanaDe(r.fecha)) + '.' : 'No hay compras de esta prenda en la semana ' + textoSemana(semanaDe(r.fecha)) + '. Registra primero la compra.'}</div></div>
+      <div class="ayuda">${prods.length ? 'Colores comprados en la semana ' + semTxt + ' con prendas sin registrar.' : sinDisp ? 'Ya registraste todo lo comprado de esta prenda en la semana ' + semTxt + '.' : 'No hay compras de esta prenda en la semana ' + semTxt + '. Registra primero la compra.'}</div></div>
       ${tallas.length ? `${F.puede ? `<label class="check" style="background:var(--pri2);border-radius:10px;margin-bottom:10px"><input type="checkbox" ${F.mixto ? 'checked' : ''} onchange="regMixto(this.checked)"><span>Una parte la hizo <b>${esc(nomCompleta)}</b> con solo algunas operaciones</span></label>` : ''}
       <div class="campo"><label>Cantidad por talla</label>
       ${F.mixto ? `<div class="ayuda" style="margin:-2px 0 6px">Izquierda: trabajo normal (lo de arriba) · Derecha: prendas con operaciones de ${esc(nomCompleta)}</div>` : ''}
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(${F.mixto ? 150 : 78}px,1fr));gap:8px">${tallas.map(p => `<div><label style="margin-bottom:2px">${esc(partesProd(p).talla)}</label><div style="display:flex;gap:4px"><input class="inp" type="number" inputmode="numeric" min="0" value="${F.rq[p.id] || ''}" placeholder="0" oninput="F.rq['${p.id}']=+this.value||0;regCalc()">${F.mixto ? `<input class="inp" style="background:var(--aviso2)" type="number" inputmode="numeric" min="0" value="${F.rq2[p.id] || ''}" placeholder="0" oninput="F.rq2['${p.id}']=+this.value||0;regCalc()">` : ''}</div><div class="ayuda">compradas ${num(cSem[p.id] || 0)}</div></div>`).join('')}</div></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(${F.mixto ? 150 : 78}px,1fr));gap:8px">${tallas.map(p => `<div><label style="margin-bottom:2px">${esc(partesProd(p).talla)}</label><div style="display:flex;gap:4px"><input class="inp" type="number" inputmode="numeric" min="0" value="${F.rq[p.id] || ''}" placeholder="0" oninput="F.rq['${p.id}']=+this.value||0;regCalc()">${F.mixto ? `<input class="inp" style="background:var(--aviso2)" type="number" inputmode="numeric" min="0" value="${F.rq2[p.id] || ''}" placeholder="0" oninput="F.rq2['${p.id}']=+this.value||0;regCalc()">` : ''}</div><div class="ayuda">disponibles ${num(cSem[p.id] || 0)}</div></div>`).join('')}</div></div>
       ${F.mixto ? bloqueOps2(prenda, r, nomCompleta) : ''}
       <div class="calc"><span>Total del rollo</span><b id="rollo-total">0 prendas</b></div>
       ${F.mixto ? '<div class="nota" id="rollo-mixto-info"></div>' : ''}` : ''}`;
@@ -909,11 +928,30 @@ function pintarRegistro() {
   regCalc();
 }
 function regLimpiar() { const u = new Set(universo(porId('prendas', F.d.prendaId), F.d.maquina, F.d.fecha).map(o => o.id)); F.d.ops = F.d.ops.filter(id => u.has(id)); }
-function productosDePrenda(prenda, fecha, actualId) { // solo lo que entró por compras en la semana de esa fecha
+function productosDePrenda(prenda, fecha, actualId, disp) { // solo lo que entró por compras en la semana de esa fecha
   if (!prenda) return [];
   const n = prenda.nombre.trim().toLowerCase(), sem = semanaDe(fecha), comp = new Set();
   S.compras.filter(c => enRango(c.fecha, sem.inicio, sem.fin)).forEach(c => (c.lineas || []).forEach(l => comp.add(l.productoId)));
-  return S.productos.filter(p => (p.categoria || '').toLowerCase().startsWith(n) && (comp.has(p.id) || p.id === actualId)).sort(ordenProd);
+  return S.productos.filter(p => (p.categoria || '').toLowerCase().startsWith(n) && (comp.has(p.id) || p.id === actualId) && (!disp || p.id === actualId || (disp[p.id] || 0) > 0)).sort(ordenProd);
+}
+// Prendas ya registradas en la semana de esa fecha, por producto y por lado (recta / remalle)
+function usadoPorProducto(fecha, excluirId) {
+  const sem = semanaDe(fecha), m = {};
+  S.registros.filter(r => r.productoId && r.id !== excluirId && r.origenId !== excluirId && enRango(r.fecha, sem.inicio, sem.fin)).forEach(r => {
+    const o = m[r.productoId] || (m[r.productoId] = { rec: 0, rem: 0 }), q = +r.cantidad || 0, par = r.origenId ? porId('registros', r.origenId) : null;
+    [['recta', 'rec'], ['remalle', 'rem']].forEach(([mq, k]) => {
+      if (r.maquina !== mq && r.maquina !== 'completa') return;
+      if (par && (par.maquina === mq || par.maquina === 'completa')) return; // ya contada en el trabajo de origen
+      o[k] += q;
+    });
+  });
+  return m;
+}
+// Disponibles = compradas en la semana menos lo ya registrado para esa máquina
+function dispMapa(fecha, maquina) {
+  const comp = comprasSemana(fecha), us = usadoPorProducto(fecha, F && F.d ? F.d.id : ''), d = {};
+  Object.keys(comp).forEach(id => { const u = us[id] || { rec: 0, rem: 0 }; d[id] = Math.max(0, comp[id] - (maquina === 'recta' ? u.rec : maquina === 'remalle' ? u.rem : Math.max(u.rec, u.rem))); });
+  return d;
 }
 function comprasSemana(fecha) { // unidades compradas por producto en la semana de esa fecha
   const sem = semanaDe(fecha), m = {};
@@ -955,6 +993,12 @@ function guardarRollo() {
   if (!filas.length && !filas2.length) return aviso('Escribe la cantidad de al menos una talla');
   if (filas.length && r.tipo !== 'todo' && !r.ops.length) return aviso(r.tipo === 'solo' ? 'Marca las operaciones que hizo' : 'Marca las operaciones que NO hizo (o elige “Todo completo”)');
   if (filas2.length && !F.ops2.length) return aviso('Marca las operaciones que hizo ' + (porId('personas', idCompleta())?.nombre || 'la otra persona'));
+  {
+    const dA = dispMapa(r.fecha, r.maquina), dR = dispMapa(r.fecha, 'recta'), qA = {}, qB = {}, excede = [];
+    filas.forEach(([id, q]) => qA[id] = +q); filas2.forEach(([id, q]) => qB[id] = +q);
+    new Set([...Object.keys(qA), ...Object.keys(qB)]).forEach(id => { const a = qA[id] || 0, b = qB[id] || 0; if (a > (dA[id] || 0) || (r.maquina === 'remalle' ? 0 : a) + b > (dR[id] || 0)) excede.push(porId('productos', id)?.nombre || id); });
+    if (excede.length && !confirm('Estás registrando más de lo disponible (compradas menos ya registradas) en: ' + excede.join(', ') + '.\n¿Guardar de todas formas?')) return;
+  }
   UI.ultPrenda = r.prendaId;
   filas.forEach(([pid, q], i) => {
     const x = { ...copia(r), id: nid(), productoId: pid, cantidad: +q, creado: Date.now() + i * 3 };
@@ -1021,6 +1065,7 @@ function guardarRegistro() {
   if (F.nuevo && !r.productoId) return aviso('Elige la prenda exacta (talla y color)');
   if (!(+r.cantidad > 0)) return aviso('Escribe la cantidad');
   if (r.tipo !== 'todo' && !r.ops.length) return aviso(r.tipo === 'solo' ? 'Marca las operaciones que hizo' : 'Marca las operaciones que NO hizo (o elige “Todo completo”)');
+  if (r.productoId && +r.cantidad > (dispMapa(r.fecha, r.maquina)[r.productoId] || 0) && !confirm('Estás registrando más de lo disponible (compradas menos ya registradas) en ' + (porId('productos', r.productoId)?.nombre || 'esta prenda') + '.\n¿Guardar de todas formas?')) return;
   r.cantidad = +r.cantidad; UI.ultPrenda = r.prendaId;
   if (r.origenId && !F.nuevo) r.manual = true;
   if (F.puede) r.completar = F.completar;
