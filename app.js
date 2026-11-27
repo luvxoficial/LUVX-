@@ -845,7 +845,7 @@ function lineaRegistro(r) {
 function formRegistro(id, pid) {
   const r = id ? copia(porId('registros', id)) : { id: nid(), personaId: pid, fecha: fechaPorDefecto(), prendaId: (UI.ultPrenda && porId('prendas', UI.ultPrenda)) ? UI.ultPrenda : (S.prendas[0]?.id || ''), productoId: '', sinEtiqueta: false, cantidad: '', maquina: 'recta', tipo: 'todo', ops: [], creado: Date.now() };
   const quien = idCompleta();
-  F = { col: 'registros', d: r, nuevo: !id, abierto: false, verTodos: false, rollo: false, rq: {}, rcolor: '', puede: !!quien && r.personaId !== quien && !r.origenId };
+  F = { col: 'registros', d: r, nuevo: !id, abierto: false, verTodos: false, rollo: false, rq: {}, rq2: {}, mixto: false, ops2: [], abierto2: false, rcolor: '', puede: !!quien && r.personaId !== quien && !r.origenId };
   F.completar = F.puede && (id ? !!r.completar : true);
   const per = porId('personas', r.personaId);
   abrirModal((id ? 'Editar registro · ' : 'Nuevo registro · ') + esc(per?.nombre || ''), '<div id="reg-form"></div>',
@@ -866,7 +866,7 @@ function pintarRegistro() {
   const bloqueProd = `<div class="campo"><label>Prenda exacta (talla y color)</label>
       <select onchange="F.d.productoId=this.value"><option value="">— Elegir —</option>${opcionesProd}</select>
       <div class="ayuda">${prods.length ? 'Solo prendas compradas en la semana ' + textoSemana(semanaDe(r.fecha)) + '.' : 'No hay compras de esta prenda en la semana ' + textoSemana(semanaDe(r.fecha)) + '. Registra primero la compra.'}</div></div>`;
-  const etq = etqOp();
+  const etq = etqOp(), nomCompleta = porId('personas', idCompleta())?.nombre || '';
   const bloqueEtq = etq && r.maquina === 'recta' ? `<label class="check" style="background:var(--aviso2);border-radius:10px;margin-bottom:12px"><input type="checkbox" ${r.sinEtiqueta ? 'checked' : ''} onchange="regSinEtq(this.checked)"><span>Sin etiqueta (no se pegó etiqueta)</span></label>` : '';
   const bloqueModo = F.nuevo ? `<div class="campo"><label>Cómo registrar</label><div class="seg"><button class="${!F.rollo ? 'act' : ''}" onclick="regModo(false)">Una prenda</button><button class="${F.rollo ? 'act' : ''}" onclick="regModo(true)">Por rollo (varias tallas)</button></div></div>` : '';
   let bloqueRollo = '';
@@ -876,8 +876,13 @@ function pintarRegistro() {
     bloqueRollo = `<div class="campo"><label>Color del rollo</label>
       <select onchange="regColor(this.value)"><option value="">— Elegir color —</option>${Object.keys(colores).sort().map(k => `<option value="${esc(k)}" ${k === F.rcolor ? 'selected' : ''}>${esc(k)}</option>`).join('')}</select>
       <div class="ayuda">${prods.length ? 'Colores comprados en la semana ' + textoSemana(semanaDe(r.fecha)) + '.' : 'No hay compras de esta prenda en la semana ' + textoSemana(semanaDe(r.fecha)) + '. Registra primero la compra.'}</div></div>
-      ${tallas.length ? `<div class="campo"><label>Cantidad por talla</label><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(78px,1fr));gap:8px">${tallas.map(p => `<div><label style="margin-bottom:2px">${esc(partesProd(p).talla)}</label><input class="inp" type="number" inputmode="numeric" min="0" value="${F.rq[p.id] || ''}" placeholder="0" oninput="F.rq['${p.id}']=+this.value||0;regCalc()"><div class="ayuda">compradas ${num(cSem[p.id] || 0)}</div></div>`).join('')}</div></div>
-      <div class="calc"><span>Total del rollo</span><b id="rollo-total">0 prendas</b></div>` : ''}`;
+      ${tallas.length ? `${F.puede ? `<label class="check" style="background:var(--pri2);border-radius:10px;margin-bottom:10px"><input type="checkbox" ${F.mixto ? 'checked' : ''} onchange="regMixto(this.checked)"><span>Una parte la hizo <b>${esc(nomCompleta)}</b> con solo algunas operaciones</span></label>` : ''}
+      <div class="campo"><label>Cantidad por talla</label>
+      ${F.mixto ? `<div class="ayuda" style="margin:-2px 0 6px">Izquierda: trabajo normal (lo de arriba) · Derecha: prendas con operaciones de ${esc(nomCompleta)}</div>` : ''}
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(${F.mixto ? 150 : 78}px,1fr));gap:8px">${tallas.map(p => `<div><label style="margin-bottom:2px">${esc(partesProd(p).talla)}</label><div style="display:flex;gap:4px"><input class="inp" type="number" inputmode="numeric" min="0" value="${F.rq[p.id] || ''}" placeholder="0" oninput="F.rq['${p.id}']=+this.value||0;regCalc()">${F.mixto ? `<input class="inp" style="background:var(--aviso2)" type="number" inputmode="numeric" min="0" value="${F.rq2[p.id] || ''}" placeholder="0" oninput="F.rq2['${p.id}']=+this.value||0;regCalc()">` : ''}</div><div class="ayuda">compradas ${num(cSem[p.id] || 0)}</div></div>`).join('')}</div></div>
+      ${F.mixto ? bloqueOps2(prenda, r, nomCompleta) : ''}
+      <div class="calc"><span>Total del rollo</span><b id="rollo-total">0 prendas</b></div>
+      ${F.mixto ? '<div class="nota" id="rollo-mixto-info"></div>' : ''}` : ''}`;
   }
   $('reg-form').innerHTML = `
     <div class="campo"><label>Fecha</label><input type="date" value="${r.fecha}" onchange="F.d.fecha=this.value;regLimpiar();pintarRegistro()"></div>
@@ -928,16 +933,28 @@ function partesProd(p) { // separa color, talla y detalle del nombre del product
 const claveColor = p => { const x = partesProd(p); return (x.cat + ' ' + x.color + (x.suf ? ' (' + x.suf + ')' : '')).replace(/\s+/g, ' ').trim(); };
 const ORDEN_TALLA = ['XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL'];
 const ordenTalla = (a, b) => { const x = partesProd(a).talla.toUpperCase(), y = partesProd(b).talla.toUpperCase(); const i = ORDEN_TALLA.indexOf(x), j = ORDEN_TALLA.indexOf(y); return (i < 0 ? 99 : i) - (j < 0 ? 99 : j) || x.localeCompare(y); };
-function regModo(on) { F.rollo = on; F.rq = {}; F.rcolor = ''; F.d.productoId = ''; pintarRegistro(); }
-function regColor(k) { F.rcolor = k; F.rq = {}; pintarRegistro(); }
+function regModo(on) { F.rollo = on; F.rq = {}; F.rq2 = {}; F.mixto = false; F.ops2 = []; F.rcolor = ''; F.d.productoId = ''; pintarRegistro(); }
+function regColor(k) { F.rcolor = k; F.rq = {}; F.rq2 = {}; pintarRegistro(); }
+function regMixto(on) { F.mixto = on; F.rq2 = {}; F.ops2 = []; F.abierto2 = on; if (on) F.completar = true; pintarRegistro(); }
+function regMarcar2(id, on) { const t = new Set(F.ops2); on ? t.add(id) : t.delete(id); F.ops2 = [...t]; regCalc(); }
+function bloqueOps2(prenda, r, nom) { // operaciones que hizo la persona que completa, en las prendas "mixtas"
+  const u = universo(prenda, 'recta', r.fecha), marc = new Set(F.ops2);
+  const nombres = F.ops2.map(id => prenda?.ops.find(o => o.id === id)?.nombre).filter(Boolean);
+  return `<div class="campo"><label>Operaciones de recta que hizo ${esc(nom)} (el remalle lo hace siempre)</label>
+    <button class="desp-btn" onclick="F.abierto2=!F.abierto2;pintarRegistro()"><span>${F.abierto2 ? 'Marca las que hizo ' + esc(nom) : (nombres.length ? nombres.length + ' marcada' + (nombres.length > 1 ? 's' : '') : 'Elegir operaciones')}</span><span class="flecha">${F.abierto2 ? '▲' : '▼'}</span></button>
+    ${F.abierto2 ? `<div class="desp-panel">${[['recta', 'Recta']].map(([m, t]) => `<div class="grupo">${t}</div>` + u.filter(o => o.maquina === m).map(o => `<label class="check"><input type="checkbox" ${marc.has(o.id) ? 'checked' : ''} onchange="regMarcar2('${o.id}',this.checked)"><span>${esc(o.nombre)}</span><span class="pr">${sol(precioOp(o, r.fecha))}</span></label>`).join('')).join('')}<div style="padding:6px 6px 0"><button class="btn ancho chico" onclick="F.abierto2=false;pintarRegistro()">Listo</button></div></div>`
+      : (nombres.length ? `<div class="resumen-ops">Hizo: ${esc(nombres.join(', '))}</div>` : '')}</div>`;
+}
 function guardarRollo() {
   const r = F.d, prenda = porId('prendas', r.prendaId);
   if (!r.prendaId) return aviso('Elige la prenda');
   if (!F.rcolor) return aviso('Elige el color del rollo');
   const vis = new Set(productosDePrenda(prenda, r.fecha, '').filter(p => claveColor(p) === F.rcolor).map(p => p.id));
   const filas = Object.entries(F.rq || {}).filter(([id, q]) => vis.has(id) && +q > 0);
-  if (!filas.length) return aviso('Escribe la cantidad de al menos una talla');
-  if (r.tipo !== 'todo' && !r.ops.length) return aviso(r.tipo === 'solo' ? 'Marca las operaciones que hizo' : 'Marca las operaciones que NO hizo (o elige “Todo completo”)');
+  const filas2 = F.mixto ? Object.entries(F.rq2 || {}).filter(([id, q]) => vis.has(id) && +q > 0) : [];
+  if (!filas.length && !filas2.length) return aviso('Escribe la cantidad de al menos una talla');
+  if (filas.length && r.tipo !== 'todo' && !r.ops.length) return aviso(r.tipo === 'solo' ? 'Marca las operaciones que hizo' : 'Marca las operaciones que NO hizo (o elige “Todo completo”)');
+  if (filas2.length && !F.ops2.length) return aviso('Marca las operaciones que hizo ' + (porId('personas', idCompleta())?.nombre || 'la otra persona'));
   UI.ultPrenda = r.prendaId;
   filas.forEach(([pid, q], i) => {
     const x = { ...copia(r), id: nid(), productoId: pid, cantidad: +q, creado: Date.now() + i * 3 };
@@ -945,7 +962,13 @@ function guardarRollo() {
     guardar('registros', x);
     if (F.puede && x.completar) partesFaltantes(x).forEach(h => guardar('registros', h));
   });
-  cerrarModal(); aviso('Rollo guardado ✓ (' + filas.length + ' registros)');
+  // Prendas donde la otra persona hizo algunas operaciones de recta (y siempre el remalle): john hizo la recta menos esas
+  filas2.forEach(([pid, q], i) => {
+    const x = { ...copia(r), id: nid(), productoId: pid, cantidad: +q, maquina: 'recta', tipo: 'menos', ops: [...F.ops2], completar: true, creado: Date.now() + (filas.length + i) * 3 };
+    guardar('registros', x);
+    partesFaltantes(x).forEach(h => guardar('registros', h));
+  });
+  cerrarModal(); aviso('Rollo guardado ✓ (' + (filas.length + filas2.length) + ' registros)');
 }
 function etqOp() { const p = porId('prendas', F.d.prendaId); return p && /baggy/i.test(p.nombre) ? p.ops.find(o => /etiqueta/i.test(o.nombre)) : null; }
 function regResetEtq() { if (F.d.sinEtiqueta) { F.d.sinEtiqueta = false; F.d.tipo = 'todo'; F.d.ops = []; } }
@@ -957,7 +980,7 @@ function aplicarEtq(on) {
   else if (on) { F.d.tipo = 'menos'; s.add(e.id); }
   F.d.ops = [...s];
 }
-function regPrenda(id) { regResetEtq(); F.d.prendaId = id; F.d.productoId = ''; F.d.ops = []; F.verTodos = false; F.rcolor = ''; F.rq = {}; pintarRegistro(); }
+function regPrenda(id) { regResetEtq(); F.d.prendaId = id; F.d.productoId = ''; F.d.ops = []; F.verTodos = false; F.rcolor = ''; F.rq = {}; F.rq2 = {}; F.ops2 = []; pintarRegistro(); }
 function regTipo(k) { F.d.tipo = k; F.d.ops = []; F.abierto = k !== 'todo'; if (F.d.sinEtiqueta) aplicarEtq(true); pintarRegistro(); }
 function regSinEtq(on) { F.d.sinEtiqueta = on; aplicarEtq(on); pintarRegistro(); }
 function regMaquina(m) { if (m !== F.d.maquina) regResetEtq(); F.d.maquina = m; if (!tiposPermitidos(m).includes(F.d.tipo)) F.d.tipo = 'todo'; regLimpiar(); pintarRegistro(); }
@@ -971,7 +994,17 @@ function regMarcar(id, on) {
   regCalc();
 }
 function regCalc() {
-  if (F.rollo) { F.d.cantidad = Object.values(F.rq || {}).reduce((t, q) => t + (+q || 0), 0); const tt = $('rollo-total'); if (tt) tt.textContent = num(F.d.cantidad) + ' prendas'; }
+  if (F.rollo) {
+    const sA = Object.values(F.rq || {}).reduce((t, q) => t + (+q || 0), 0), sB = F.mixto ? Object.values(F.rq2 || {}).reduce((t, q) => t + (+q || 0), 0) : 0;
+    F.d.cantidad = sA; const tt = $('rollo-total'); if (tt) tt.textContent = num(sA + sB) + ' prendas';
+    const inf = $('rollo-mixto-info');
+    if (inf && F.d.prendaId) {
+      const nom = porId('personas', idCompleta())?.nombre || '', dB = { ...copia(F.d), maquina: 'recta', tipo: 'menos', ops: F.ops2, cantidad: sB };
+      const pagoA = pagoUnit(F.d) * sA, pagoB = pagoUnit(dB) * sB;
+      const yo = (F.completar ? partesFaltantes({ ...F.d, cantidad: sA }).reduce((t, x) => t + pagoReg(x), 0) : 0) + (sB && F.ops2.length ? partesFaltantes(dB).reduce((t, x) => t + pagoReg(x), 0) : 0);
+      inf.innerHTML = `Normal: <b>${num(sA)}</b> prendas · Con operaciones de ${esc(nom)}: <b>${num(sB)}</b> prendas<br>A <b>${esc(porId('personas', F.d.personaId)?.nombre || '')}</b> se le paga <b>${sol(pagoA + pagoB)}</b> · A <b>${esc(nom)}</b> se le anota <b>${sol(yo)}</b>`;
+    }
+  }
   const pu = F.d.prendaId ? pagoUnit(F.d) : 0;
   $('reg-pu').textContent = sol(pu); $('reg-tot').textContent = sol(pu * (+F.d.cantidad || 0));
   const el = $('reg-resto'); if (!el) return;

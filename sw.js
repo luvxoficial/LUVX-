@@ -1,6 +1,6 @@
 // Guarda la app en el celular para que abra rápido y funcione sin internet.
 // Si cambias algún archivo, sube también este con un número nuevo en VERSION.
-const VERSION = 'luvx-v5';
+const VERSION = 'luvx-v6';
 const ARCHIVOS = ['./', 'index.html', 'estilos.css', 'app.js', 'firebase-config.js', 'datos_iniciales.js', 'manifest.json', 'icono-192.png', 'icono-512.png'];
 
 self.addEventListener('install', e => {
