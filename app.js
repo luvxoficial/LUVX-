@@ -824,11 +824,11 @@ function marcaReg(r) {
 const chipMaq = m => m === 'recta' ? 'chip' : m === 'remalle' ? 'chip rem' : 'chip comp';
 function chipsTallas(g) {
   const t = g.slice().sort((a, b) => { const pa = porId('productos', a.productoId), pb = porId('productos', b.productoId); return pa && pb ? ordenTalla(pa, pb) : 0; });
-  return `<div class="tallas">${t.map(x => `<button class="chip-talla" onclick="formRegistro('${x.id}')">${esc(partesProd(porId('productos', x.productoId)).talla)} ×${num(x.cantidad)}</button>`).join('')}<span class="ayuda" style="align-self:center">Toca una talla para editarla</span></div>`;
+  return `<div class="tallas">${t.map(x => `<span class="chip-talla">${esc(partesProd(porId('productos', x.productoId)).talla)} ×${num(x.cantidad)}</span>`).join('')}<span class="ayuda" style="align-self:center">Toca la tarjeta para editar el rollo</span></div>`;
 }
 function lineaGrupo(g) {
   if (g.length === 1) return lineaRegistro(g[0]);
-  const prod = porId('productos', g[0].productoId);
+  const prod = porId('productos', g[0].productoId), ids = g.map(x => x.id).join(',');
   // partes: mismo trabajo (máquina, tipo y operaciones) = un bloque con sus tallas
   const partes = [], idx = {};
   g.forEach(r => {
@@ -841,15 +841,80 @@ function lineaGrupo(g) {
   const cab = `<b>${fCorta(g[0].fecha)}</b> · ${esc(claveColor(prod))} ×${num(real)}`;
   if (partes.length === 1) { // un solo trabajo, varias tallas (rollo)
     const r = g[0];
-    return `<div class="fila" style="flex-direction:column;align-items:stretch;cursor:default;gap:0">
+    return `<div class="fila" onclick="formRollo('${ids}')" style="flex-direction:column;align-items:stretch;gap:0">
       <div style="display:flex;gap:10px;align-items:center"><div class="cuerpo reg-linea">${cab} <span class="${chipMaq(r.maquina)}">${MAQ[r.maquina]}</span> · <span style="color:var(--suave)">${esc(textoOps(r))}</span>${marcaReg(r)}</div>
       <div class="der"><span class="monto">${sol(pago)}</span><small>${sol(pagoUnit(r))} c/u</small></div></div>${chipsTallas(g)}</div>`;
   }
-  return `<div class="fila" style="flex-direction:column;align-items:stretch;cursor:default;gap:0">
+  return `<div class="fila" onclick="formRollo('${ids}')" style="flex-direction:column;align-items:stretch;gap:0">
     <div style="display:flex;gap:10px;align-items:center"><div class="cuerpo reg-linea">${cab} <span class="chip comp">${maqs}</span></div>
     <div class="der"><span class="monto">${sol(pago)}</span><small>${real ? sol(pago / real) : sol(0)} c/u</small></div></div>
     ${partes.map(p => { const r = p[0], pp = p.reduce((t, x) => t + pagoReg(x), 0); return `<div class="parte"><div style="display:flex;gap:10px;align-items:center"><div class="cuerpo reg-linea"><span class="${chipMaq(r.maquina)}">${MAQ[r.maquina]}</span> · <span style="color:var(--suave)">${esc(textoOps(r))}</span>${marcaReg(r)}</div><b>${sol(pp)}</b></div>${chipsTallas(p)}</div>`; }).join('')}
   </div>`;
+}
+// ----- Editar todo un rollo en conjunto -----
+function formRollo(idsTxt) {
+  const ids = new Set(idsTxt.split(',')), regs = S.registros.filter(r => ids.has(r.id)).map(copia);
+  if (!regs.length) return;
+  const partes = [], idx = {};
+  regs.forEach(r => { const k = [r.maquina, r.tipo, (r.ops || []).slice().sort().join(','), r.origenId ? 'h' : '', r.completar ? 'c' : ''].join('|'); if (idx[k] === undefined) { idx[k] = partes.length; partes.push([]); } partes[idx[k]].push(r); });
+  partes.forEach(p => p.sort((a, b) => { const pa = porId('productos', a.productoId), pb = porId('productos', b.productoId); return pa && pb ? ordenTalla(pa, pb) : 0; }));
+  F = { col: 'rollo', partes, fecha: regs[0].fecha, abiertoP: -1, orig: copia(regs) };
+  const prod = porId('productos', regs[0].productoId), per = porId('personas', regs[0].personaId);
+  abrirModal('Editar rollo · ' + esc(per?.nombre || '') + ' · ' + esc(prod ? claveColor(prod) : ''), '<div id="rollo-form"></div>',
+    `<button class="btn peligro" onclick="borrarRollo()">Borrar rollo</button><button class="btn" onclick="cerrarModal()">Cancelar</button><button class="btn pri" onclick="guardarRolloEd()">Guardar</button>`);
+  pintarRollo();
+}
+function pintarRollo() {
+  const partes = F.partes, prenda = porId('prendas', partes[0][0].prendaId);
+  $('rollo-form').innerHTML = `<div class="campo"><label>Fecha</label><input type="date" value="${F.fecha}" onchange="F.fecha=this.value;rolloCalc()"></div>` +
+    partes.map((p, i) => {
+      const r = p[0], marc = new Set(r.ops || []), abierta = F.abiertoP === i, u = universo(prenda, r.maquina, F.fecha);
+      const grupos = r.maquina === 'completa' ? [['recta', 'Recta'], ['remalle', 'Remalle']] : [[r.maquina, '']];
+      return `<div class="tarjeta">
+        <div class="reg-linea"><span class="${chipMaq(r.maquina)}">${MAQ[r.maquina]}</span> · <span style="color:var(--suave)">${esc(textoOps(r))}</span>${marcaReg(r)}</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(78px,1fr));gap:8px;margin-top:8px">${p.map((x, j) => `<div><label style="font-size:12px;color:var(--suave);display:block;margin-bottom:2px">${esc(partesProd(porId('productos', x.productoId)).talla)}</label><input class="inp" type="number" inputmode="numeric" min="0" value="${x.cantidad}" oninput="F.partes[${i}][${j}].cantidad=+this.value||0;rolloCalc()"></div>`).join('')}</div>
+        <div class="ayuda">Pon 0 en una talla para quitarla.</div>
+        <button class="btn chico" style="margin-top:8px" onclick="F.abiertoP=${abierta ? -1 : i};pintarRollo()">${abierta ? 'Cerrar operaciones' : 'Cambiar operaciones'}</button>
+        ${abierta ? `<div class="campo" style="margin-top:8px"><div class="seg">${tiposPermitidos(r.maquina).map(k => `<button class="${k === r.tipo ? 'act' : ''}" onclick="rolloTipo(${i},'${k}')">${TIPO[k]}</button>`).join('')}</div></div>
+          ${r.tipo === 'todo' ? '' : `<div class="ayuda" style="margin-bottom:4px">${r.tipo === 'menos' ? 'Marca las que NO hizo' : 'Marca las que SÍ hizo'}</div><div class="desp-panel" style="margin-top:0;border-top:1px solid #cfd4cf">${grupos.map(([m, t]) => (t ? `<div class="grupo">${t}</div>` : '') + u.filter(o => o.maquina === m).map(o => `<label class="check"><input type="checkbox" ${marc.has(o.id) ? 'checked' : ''} onchange="rolloMarcar(${i},'${o.id}',this.checked)"><span>${esc(o.nombre)}</span><span class="pr">${sol(precioOp(o, F.fecha))}</span></label>`).join('')).join('')}</div>`}` : ''}
+      </div>`;
+    }).join('') + `<div class="calc"><span>Total de este rollo</span><b id="rollo-pago"></b></div>`;
+  rolloCalc();
+}
+function rolloTipo(i, k) { F.partes[i].forEach(x => { x.tipo = k; x.ops = []; }); F.abiertoP = i; pintarRollo(); }
+function rolloMarcar(i, id, on) { F.partes[i].forEach(x => { const t = new Set(x.ops || []); on ? t.add(id) : t.delete(id); x.ops = [...t]; }); rolloCalc(); }
+function rolloCalc() { const el = $('rollo-pago'); if (el) el.textContent = sol(F.partes.flat().reduce((t, x) => t + pagoReg({ ...x, fecha: F.fecha }), 0)); }
+function guardarRolloEd() {
+  if (!F.fecha) return aviso('Falta la fecha');
+  for (const p of F.partes) { const r = p[0]; if (p.some(x => +x.cantidad > 0) && r.tipo !== 'todo' && !(r.ops || []).length) return aviso(r.tipo === 'solo' ? 'Marca las operaciones que hizo' : 'Marca las operaciones que NO hizo (o elige “Todo completo”)'); }
+  const orig = {}; F.orig.forEach(o => orig[o.id] = o);
+  const todos = F.partes.flat(), quien = idCompleta(), nom = porId('personas', quien)?.nombre || '';
+  const hijosManual = todos.some(x => !x.origenId && x.completar && S.registros.some(h => h.origenId === x.id && h.manual));
+  const reemplazar = !hijosManual || confirm('Lo anotado a ' + nom + ' de este rollo fue cambiado a mano. ¿Reemplazarlo con lo que falta ahora?');
+  todos.forEach(x => {
+    const o = orig[x.id];
+    if (!(+x.cantidad > 0)) { S.registros.filter(h => h.origenId === x.id).forEach(h => borrar('registros', h.id)); borrar('registros', x.id); return; }
+    x.cantidad = +x.cantidad;
+    const cambio = o.fecha !== F.fecha || +o.cantidad !== x.cantidad || o.tipo !== x.tipo || JSON.stringify(o.ops || []) !== JSON.stringify(x.ops || []);
+    x.fecha = F.fecha;
+    if (x.origenId && cambio) x.manual = true;
+    guardar('registros', x);
+    if (!x.origenId && x.completar && quien && x.personaId !== quien) { // actualizar lo que se anotó a quien completa
+      const hijos = S.registros.filter(h => h.origenId === x.id);
+      if (reemplazar || !hijos.some(h => h.manual)) {
+        const nuevos = partesFaltantes(x), ids = new Set(nuevos.map(n => n.id));
+        hijos.filter(h => !ids.has(h.id)).forEach(h => borrar('registros', h.id));
+        nuevos.forEach(n => guardar('registros', n));
+      }
+    }
+  });
+  cerrarModal(); aviso('Rollo guardado ✓');
+}
+function borrarRollo() {
+  const todos = F.partes.flat();
+  if (!confirm('¿Borrar este rollo completo (' + todos.length + ' registros) y lo que se anotó a otras personas por él?')) return;
+  const ids = new Set(todos.map(x => x.id)); S.registros.filter(h => ids.has(h.origenId)).forEach(h => ids.add(h.id));
+  ids.forEach(id => borrar('registros', id)); cerrarModal(); aviso('Rollo borrado');
 }
 function lineaRegistro(r) {
   const p = porId('prendas', r.prendaId), prod = porId('productos', r.productoId);
