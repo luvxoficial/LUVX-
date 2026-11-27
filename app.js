@@ -801,9 +801,25 @@ function vPersona(pid) {
   const regs = S.registros.filter(r => r.personaId === pid && enRango(r.fecha, s.inicio, s.fin)).sort((a, b) => a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : (a.creado || 0) - (b.creado || 0));
   const total = regs.reduce((t, r) => t + pagoReg(r), 0);
   const porMaq = m => regs.filter(r => r.maquina === m).reduce((t, r) => t + pagoReg(r), 0);
-  return `<div class="cifras">${cifra('A pagar a ' + esc(per.nombre), sol(total))}${cifra('Prendas', num(prendasReales(regs)))}</div>
+  return `<div class="cifras">${cifra('A pagar a ' + esc(per.nombre), sol(total))}${cifra('Prendas', num(prendasReales(regs, false)))}</div>
     <p class="ayuda" style="margin:-2px 2px 10px">Recta ${sol(porMaq('recta'))} · Remalle ${sol(porMaq('remalle'))} · Completa ${sol(porMaq('completa'))}</p>
-    <div class="lista">${agruparRollos(regs).map(lineaGrupo).join('') || '<div class="vacio">Sin registros en esta semana.<br>Toca “+ Registro” para anotar.</div>'}</div>`;
+    ${seccionesPrendas(regs)}`;
+}
+// Ordena la lista de una persona en cuadros: BAGGYS (con cada tipo), POLERAS, CASACAS y lo que se agregue después
+function seccionesPrendas(regs) {
+  if (!regs.length) return '<div class="lista"><div class="vacio">Sin registros en esta semana.<br>Toca “+ Registro” para anotar.</div></div>';
+  const orden = ['baggy', 'polera', 'casaca'], plural = { baggy: 'BAGGYS', polera: 'POLERAS', casaca: 'CASACAS' };
+  const porPrenda = {};
+  regs.forEach(r => { const k = (porId('prendas', r.prendaId)?.nombre || 'Otros').trim(); (porPrenda[k] = porPrenda[k] || []).push(r); });
+  const claves = Object.keys(porPrenda).sort((a, b) => { const i = orden.indexOf(a.toLowerCase()), j = orden.indexOf(b.toLowerCase()); return (i < 0 ? 99 : i) - (j < 0 ? 99 : j) || a.localeCompare(b); });
+  return claves.map(k => {
+    const rs = porPrenda[k], sub = {};
+    rs.forEach(r => { const pr = porId('productos', r.productoId); const t = pr ? etiquetaModelo(pr) : k; (sub[t] = sub[t] || []).push(r); });
+    const tipos = Object.keys(sub).sort(), conTipos = tipos.length > 1 || (tipos.length === 1 && tipos[0] !== k);
+    const resumen = x => `${num(prendasReales(x, false))} prendas · ${sol(x.reduce((t, r) => t + pagoReg(r), 0))}`;
+    return `<div class="seccion-cab"><h2>${esc(plural[k.toLowerCase()] || k.toUpperCase())}</h2><span class="ayuda">${resumen(rs)}</span></div>
+      <div class="lista">${tipos.map(t => (conTipos ? `<div class="sub-cab"><span>${esc(t)}</span><span>${resumen(sub[t])}</span></div>` : '') + agruparRollos(sub[t]).map(lineaGrupo).join('')).join('')}</div>`;
+  }).join('');
 }
 // Junta en una sola tarjeta todo lo que una persona hizo de la misma prenda y color en un día (recta, remalle, operaciones...)
 function agruparRollos(regs) {
@@ -836,7 +852,7 @@ function lineaGrupo(g) {
     if (idx[k] === undefined) { idx[k] = partes.length; partes.push([]); }
     partes[idx[k]].push(r);
   });
-  const real = prendasReales(g), pago = g.reduce((t, x) => t + pagoReg(x), 0);
+  const real = prendasReales(g, false), pago = g.reduce((t, x) => t + pagoReg(x), 0);
   const maqs = [...new Set(g.map(x => x.maquina))].map(m => MAQ[m]).join(' + ');
   const cab = `<b>${fCorta(g[0].fecha)}</b> · ${esc(claveColor(prod))} ×${num(real)}`;
   if (partes.length === 1) { // un solo trabajo, varias tallas (rollo)
@@ -1155,32 +1171,39 @@ function borrarRegistro() {
   hijos.forEach(h => borrar('registros', h.id)); borrar('registros', F.d.id); cerrarModal();
 }
 
-// Cuenta cada prenda una sola vez, aunque tenga recta y remalle (completa + lo mayor entre recta y remalle)
-function prendasReales(regs) {
+// Unidades por producto y lado (recta / remalle). Prenda completa cuenta en los dos lados.
+// Con dedupe, lo anotado a otra persona sobre el mismo trabajo (falta de john) no se cuenta otra vez.
+function unidadesProd(regs, dedupe) {
   const m = {};
   regs.forEach(r => {
-    const k = r.productoId || r.prendaId, o = m[k] || (m[k] = { rec: 0, rem: 0, com: 0 });
-    const q = +r.cantidad || 0;
-    if (r.maquina === 'recta') o.rec += q; else if (r.maquina === 'remalle') o.rem += q; else o.com += q;
+    const k = r.productoId || r.prendaId, o = m[k] || (m[k] = { rec: 0, rem: 0 }), q = +r.cantidad || 0, par = dedupe && r.origenId ? porId('registros', r.origenId) : null;
+    [['recta', 'rec'], ['remalle', 'rem']].forEach(([mq, c]) => {
+      if (r.maquina !== mq && r.maquina !== 'completa') return;
+      if (par && (par.maquina === mq || par.maquina === 'completa')) return;
+      o[c] += q;
+    });
   });
-  return Object.values(m).reduce((t, o) => t + o.com + Math.max(o.rec, o.rem), 0);
+  return m;
 }
+// Prendas reales: cada prenda una sola vez, aunque tenga recta y remalle
+function prendasReales(regs, dedupe = true) { return Object.values(unidadesProd(regs, dedupe)).reduce((t, o) => t + Math.max(o.rec, o.rem), 0); }
 function vTallerResumen() {
   const s = SEM();
   const regs = S.registros.filter(r => enRango(r.fecha, s.inicio, s.fin));
   const pers = S.personas.filter(p => p.activo !== false || regs.some(r => r.personaId === p.id));
   const fila = per => { const rs = regs.filter(r => r.personaId === per.id); const m = k => rs.filter(r => r.maquina === k).reduce((t, r) => t + pagoReg(r), 0); return { per, rec: m('recta'), rem: m('remalle'), com: m('completa'), tot: rs.reduce((t, r) => t + pagoReg(r), 0), u: rs.reduce((t, r) => t + +r.cantidad, 0) }; };
   const fs = pers.map(fila); const T = k => fs.reduce((t, f) => t + f[k], 0);
-  const prendas = S.prendas.map(p => { const rs = regs.filter(r => r.prendaId === p.id); const u = k => rs.filter(r => r.maquina === k).reduce((t, r) => t + +r.cantidad, 0); return { p, rec: u('recta'), rem: u('remalle'), com: u('completa'), real: prendasReales(rs) }; }).filter(x => x.rec + x.rem + x.com);
+  const prendas = S.prendas.map(p => { const o = Object.values(unidadesProd(regs.filter(r => r.prendaId === p.id), true)); return { p, real: o.reduce((t, x) => t + Math.max(x.rec, x.rem), 0), rec: o.reduce((t, x) => t + x.rec, 0), rem: o.reduce((t, x) => t + x.rem, 0), fin: o.reduce((t, x) => t + Math.min(x.rec, x.rem), 0) }; }).filter(x => x.real > 0);
   return `<div class="cifras">${cifra('Total a pagar de todos', sol(T('tot')))}${cifra('Prendas trabajadas', num(prendasReales(regs)))}</div>
     <h3>Pago por persona</h3>
     <div class="lista tabla-caja"><table class="tabla"><tr><th>Persona</th><th>Recta</th><th>Remalle</th><th>Completa</th><th>Total</th></tr>
     ${fs.map(f => `<tr onclick="ir('t:${f.per.id}')" style="cursor:pointer"><td>${esc(f.per.nombre)}</td><td>${sol(f.rec)}</td><td>${sol(f.rem)}</td><td>${sol(f.com)}</td><td><b>${sol(f.tot)}</b></td></tr>`).join('')}
     <tr class="total"><td>Total</td><td>${sol(T('rec'))}</td><td>${sol(T('rem'))}</td><td>${sol(T('com'))}</td><td>${sol(T('tot'))}</td></tr></table></div>
-    <h3>Unidades por prenda</h3>
-    <div class="lista tabla-caja"><table class="tabla"><tr><th>Prenda</th><th>Prendas reales</th><th>Recta</th><th>Remalle</th><th>Completa</th></tr>
-    ${prendas.map(x => `<tr><td>${esc(x.p.nombre)}</td><td><b>${num(x.real)}</b></td><td>${num(x.rec)}</td><td>${num(x.rem)}</td><td>${num(x.com)}</td></tr>`).join('') || '<tr><td colspan="5" class="vacio">Sin registros</td></tr>'}</table></div>
-    <p class="ayuda">“Prendas reales” cuenta cada prenda una sola vez, aunque tenga recta y remalle.</p>`;
+    <h3>Prendas trabajadas</h3>
+    <div class="lista tabla-caja"><table class="tabla"><tr><th>Prenda</th><th>Prendas</th><th>Con recta</th><th>Con remalle</th><th>Terminadas</th></tr>
+    ${prendas.map(x => `<tr><td>${esc(x.p.nombre)}</td><td><b>${num(x.real)}</b></td><td>${num(x.rec)}</td><td>${num(x.rem)}</td><td>${num(x.fin)}</td></tr>`).join('') || '<tr><td colspan="5" class="vacio">Sin registros</td></tr>'}
+    <tr class="total"><td>Total</td><td>${num(prendas.reduce((t, x) => t + x.real, 0))}</td><td>${num(prendas.reduce((t, x) => t + x.rec, 0))}</td><td>${num(prendas.reduce((t, x) => t + x.rem, 0))}</td><td>${num(prendas.reduce((t, x) => t + x.fin, 0))}</td></tr></table></div>
+    <p class="ayuda">“Prendas” cuenta cada prenda una sola vez. “Terminadas” son las que ya tienen recta y remalle; las demás están en proceso (mira Remalle pendiente).</p>`;
 }
 function vRemalle() {
   const s = SEM(), rp = remallePendiente(s.fin);
