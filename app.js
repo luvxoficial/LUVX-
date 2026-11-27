@@ -818,7 +818,7 @@ function seccionesPrendas(regs) {
     const tipos = Object.keys(sub).sort(), conTipos = tipos.length > 1 || (tipos.length === 1 && tipos[0] !== k);
     const resumen = x => `${num(prendasReales(x, false))} prendas · ${sol(x.reduce((t, r) => t + pagoReg(r), 0))}`;
     return `<div class="seccion-cab"><h2>${esc(plural[k.toLowerCase()] || k.toUpperCase())}</h2><span class="ayuda">${resumen(rs)}</span></div>
-      <div class="lista">${tipos.map(t => (conTipos ? `<div class="sub-cab"><span>${esc(t)}</span><span>${resumen(sub[t])}</span></div>` : '') + agruparRollos(sub[t]).map(lineaGrupo).join('')).join('')}</div>`;
+      <div class="rollos">${tipos.map(t => (conTipos ? `<div class="sub-cab"><span>${esc(t)}</span><span>${resumen(sub[t])}</span></div>` : '') + agruparRollos(sub[t]).map(lineaGrupo).join('')).join('')}</div>`;
   }).join('');
 }
 // Junta en una sola tarjeta todo lo que una persona hizo de la misma prenda y color en un día (recta, remalle, operaciones...)

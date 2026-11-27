@@ -144,9 +144,15 @@ h3{font-size:15px;margin:14px 2px 6px;color:var(--suave);font-weight:600}
 .chip-talla{border:1px solid #cfd4cf;background:#fff;border-radius:999px;padding:6px 12px;font-size:13.5px;font-weight:600;cursor:pointer}
 .chip-talla:active{background:var(--pri2)}
 
-.parte{margin-top:10px;padding-top:8px;border-top:1px dashed var(--linea)}
 
 /* Cuadros por prenda en la lista de cada persona */
 .seccion-cab{display:flex;justify-content:space-between;align-items:baseline;margin:16px 2px 6px}
 .seccion-cab h2{margin:0;font-size:17px;letter-spacing:.05em;color:var(--pri)}
 .sub-cab{display:flex;justify-content:space-between;gap:8px;padding:8px 14px;background:#eef2ef;font-size:13px;font-weight:700;color:var(--suave);border-bottom:1px solid var(--linea)}
+
+/* Cada rollo/prenda como tarjeta separada, bien marcada */
+.rollos{margin-bottom:10px}
+.rollos>.fila{background:#fff;border:1px solid #c9d2cc;border-left:6px solid var(--pri);border-radius:12px;box-shadow:var(--sombra);margin-bottom:14px;padding:12px 14px}
+.rollos>.fila:last-child{border-bottom:1px solid #c9d2cc}
+.rollos>.sub-cab{background:var(--pri2);color:var(--pri);border-radius:10px;margin:16px 0 10px;border:0;padding:9px 14px}
+.parte{margin-top:10px;padding:8px 10px;background:#f3f6f4;border-radius:10px}
